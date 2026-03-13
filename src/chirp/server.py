@@ -82,6 +82,7 @@ class CreateRequest(BaseModel):
     pins_out: list[str]
     signature: str
     deterministic_code: str | None = None
+    port: int | None = None
 
 
 @app.post("/chirp/create")
@@ -92,6 +93,7 @@ def chirp_create_endpoint(req: CreateRequest):
             pins_out=req.pins_out,
             signature=req.signature,
             deterministic_code=req.deterministic_code,
+            port=req.port,
         )
         return result
     except ValueError as e:
