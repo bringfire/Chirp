@@ -117,10 +117,14 @@ def chirp_create(
     # Generate the script
     script = _generate_script(in_pins, out_pins, signature, schema, deterministic_code, port)
 
+    # Reasoning pin is always appended — exposes the LLM's chain of thought
+    all_out_pins = [{"name": n, "type": t} for n, t in out_pins]
+    all_out_pins.append({"name": "Reasoning", "type": "string"})
+
     return {
         "script": script,
         "pins_in": [{"name": n, "type": t} for n, t in in_pins],
-        "pins_out": [{"name": n, "type": t} for n, t in out_pins],
+        "pins_out": all_out_pins,
     }
 
 
@@ -171,8 +175,11 @@ def _generate_script(
 
     # RunScript with typed parameters
     # Inputs: object params (cast inside). Outputs: ref object params.
+    # Reasoning is always the last output — exposes the LLM's chain of thought.
     in_params = ", ".join(f"object {name}" for name, _ in in_pins)
-    out_params = ", ".join(f"ref object {name}" for name, _ in out_pins)
+    out_param_list = [f"ref object {name}" for name, _ in out_pins]
+    out_param_list.append("ref object Reasoning")
+    out_params = ", ".join(out_param_list)
     all_params = ", ".join(filter(None, [in_params, out_params]))
     w(f"    private void RunScript({all_params})")
     w("    {")
@@ -227,6 +234,12 @@ def _generate_script(
         reader = JSON_READ_MAP.get(type_str, "GetString()")
         # Cast to object for ref assignment
         w(f'            {name} = (object)result.GetProperty("{snake}").{reader};')
+
+    # Reasoning — expose the LLM's chain of thought
+    w()
+    w('            if (doc.RootElement.TryGetProperty("reasoning", out var reasoningEl)')
+    w('                && reasoningEl.ValueKind == JsonValueKind.String)')
+    w('                Reasoning = (object)reasoningEl.GetString();')
 
     # Deterministic post-processing
     if deterministic_code:
