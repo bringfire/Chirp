@@ -106,6 +106,14 @@ def chirp_create(
         if type_str not in CSHARP_TYPE_MAP:
             raise ValueError(f"Unknown input type: {type_str!r} for pin {name!r}")
 
+    # Reject output pin names that collide with the auto-added Reasoning pin
+    for name, _ in out_pins:
+        if name.lower() == "reasoning":
+            raise ValueError(
+                f"Output pin name {name!r} is reserved (auto-added for LLM chain-of-thought). "
+                f"Use a different name like 'Rationale' or 'Explanation'."
+            )
+
     # Build schema from output pins
     schema = {}
     for name, type_str in out_pins:
