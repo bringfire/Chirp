@@ -28,6 +28,7 @@ traces/
 
 # Environment
 .env
+Chirp_API_Key.txt
 
 # SDK reference (14MB binary)
 Grasshopper SDK.chm
