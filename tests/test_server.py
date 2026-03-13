@@ -74,3 +74,39 @@ def test_chirp_call_error_returns_500():
     data = resp.json()
     assert data["error"] == "ValueError"
     assert "bad input" in data["details"]
+
+
+def test_chirp_create_returns_script():
+    """Verify /chirp/create returns generated C# script and pin metadata."""
+    resp = client.post("/chirp/create", json={
+        "pins_in": ["SurfaceDesc:string", "Intent:string"],
+        "pins_out": ["UCount:int", "VCount:int", "Grading:float"],
+        "signature": "surface_desc, intent -> u_count, v_count, grading",
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "script" in data
+    assert "localhost:9900/chirp/call" in data["script"]
+    assert len(data["pins_in"]) == 2
+    assert len(data["pins_out"]) == 3
+
+
+def test_chirp_create_with_deterministic_code():
+    resp = client.post("/chirp/create", json={
+        "pins_in": ["X:string"],
+        "pins_out": ["Y:int"],
+        "signature": "x -> y",
+        "deterministic_code": "Y = Y * 2;",
+    })
+    assert resp.status_code == 200
+    assert "Y = Y * 2;" in resp.json()["script"]
+
+
+def test_chirp_create_invalid_type_returns_400():
+    resp = client.post("/chirp/create", json={
+        "pins_in": ["X:string"],
+        "pins_out": ["Y:FooBar"],
+        "signature": "x -> y",
+    })
+    assert resp.status_code == 400
+    assert "Unknown output type" in resp.json()["details"]
