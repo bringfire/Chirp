@@ -214,7 +214,7 @@ def _generate_script(
     w('            var json = JsonSerializer.Serialize(request);')
     w('            var content = new StringContent(json, Encoding.UTF8, "application/json");')
     w()
-    w('            var response = _client.PostAsync("http://localhost:9879/chirp/call", content).Result;')
+    w('            var response = _client.PostAsync("http://localhost:9900/chirp/call", content).Result;')
     w('            var body = response.Content.ReadAsStringAsync().Result;')
     w()
     w("            if (!response.IsSuccessStatusCode)")

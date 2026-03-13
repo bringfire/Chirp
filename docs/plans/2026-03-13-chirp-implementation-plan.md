@@ -65,8 +65,8 @@ The script component body becomes ~10 lines of C# that POST to the adapter and u
   - Request body: `{ "signature": str, "inputs": dict, "schema": dict }`
   - Response body: `{ "outputs": dict, "reasoning": str | null, "usage": { "input_tokens": int, "output_tokens": int } }`
   - Error response: `{ "error": str, "details": str }`
-- [ ] Create `src/chirp/__main__.py` — `uvicorn` entry point, configurable port (default 9879)
-- [ ] Verify: `python -m chirp` starts server, `curl -X POST http://localhost:9879/chirp/call -d '...'` returns valid response
+- [ ] Create `src/chirp/__main__.py` — `uvicorn` entry point, configurable port (default 9900)
+- [ ] Verify: `python -m chirp` starts server, `curl -X POST http://localhost:9900/chirp/call -d '...'` returns valid response
 
 ### Task 1.5: Caching
 
@@ -93,7 +93,7 @@ The script component body becomes ~10 lines of C# that POST to the adapter and u
 ### Task 2.1: Script component template
 
 - [ ] Create `templates/chirp_script_template.cs` — the C# code that goes inside a GH script component
-  - Uses `System.Net.Http.HttpClient` to POST to `http://localhost:9879/chirp/call`
+  - Uses `System.Net.Http.HttpClient` to POST to `http://localhost:9900/chirp/call`
   - Serializes inputs from component pins to JSON
   - Deserializes response JSON to typed outputs
   - Sets outputs via script component output variables (A, B, C, etc.)
@@ -193,7 +193,8 @@ The script component body becomes ~10 lines of C# that POST to the adapter and u
 
 ### Port allocation
 - Rook native: 9878 (probes 9878-9887)
-- Chirp adapter: 9879 (or next available; configurable via `CHIRP_PORT` env var)
+- RookRoads: 9878-9899 (overlaps with Rook; probes until free)
+- Chirp adapter: 9900 (first port outside both Rook and RookRoads ranges; configurable via `CHIRP_PORT` env var)
 - Could also run on Rook's port as a sub-route if integrated into Rook's server
 
 ### Dependencies
@@ -210,7 +211,7 @@ The script component body becomes ~10 lines of C# that POST to the adapter and u
 - `GET /gh/query` — canvas introspection (for future context-aware components)
 
 ### Environment variables
-- `CHIRP_PORT` — adapter service port (default 9879)
+- `CHIRP_PORT` — adapter service port (default 9900)
 - `CHIRP_TRACE_DIR` — trace log directory (default `./traces`)
 - `ANTHROPIC_API_KEY` — for LLM calls
 - `CHIRP_MODEL` — LiteLLM model string (default `anthropic/claude-sonnet-4-20250514`; supports `openai/gpt-4o`, `ollama/llama3`, any LiteLLM provider)

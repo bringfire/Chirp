@@ -77,7 +77,7 @@ class TestChirpCreate:
             pins_out=["Y:int"],
             signature="x -> y",
         )
-        assert "localhost:9879/chirp/call" in result["script"]
+        assert "localhost:9900/chirp/call" in result["script"]
         assert "HttpClient" in result["script"]
 
     def test_geometry_input_uses_tostring(self):

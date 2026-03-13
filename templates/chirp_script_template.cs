@@ -54,7 +54,7 @@ public class Script_Instance
             var content = new StringContent(json, Encoding.UTF8, "application/json");
 
             // Call Chirp adapter (synchronous — blocks until response)
-            var response = _client.PostAsync("http://localhost:9879/chirp/call", content).Result;
+            var response = _client.PostAsync("http://localhost:9900/chirp/call", content).Result;
             var body = response.Content.ReadAsStringAsync().Result;
 
             if (!response.IsSuccessStatusCode)

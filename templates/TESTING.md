@@ -2,7 +2,7 @@
 
 ## Prerequisites
 1. Chirp adapter running: `python -m chirp` (from repo root with venv activated)
-2. Verify: `curl http://localhost:9879/health` returns `{"status":"ok"}`
+2. Verify: `curl http://localhost:9900/health` returns `{"status":"ok"}`
 3. Rhino + Grasshopper open
 
 ## Test 2.2: Intent to Parameters

@@ -57,7 +57,7 @@ public class Script_Instance
             var json = JsonSerializer.Serialize(request);
             var content = new StringContent(json, Encoding.UTF8, "application/json");
 
-            var response = _client.PostAsync("http://localhost:9879/chirp/call", content).Result;
+            var response = _client.PostAsync("http://localhost:9900/chirp/call", content).Result;
             var body = response.Content.ReadAsStringAsync().Result;
 
             if (!response.IsSuccessStatusCode)
