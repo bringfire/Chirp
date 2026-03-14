@@ -8,9 +8,9 @@
 
 ## Context
 
-Chirp started as a spec-driven code generation pipeline for Grasshopper components, inspired by CodeSpeak. The original brief described a YAML-to-C# compiler with a retry loop.
+Chirp started as a spec-driven code generation pipeline for Grasshopper components, inspired by CodeSpeak. The original brief described a YAML-to-C# compiler with a retry loop — "let AI write the code."
 
-Then we looked at Rook.
+Then we looked at Rook. And then we built something different: components with live LLM reasoning at solve time, where the intelligence isn't in the generated code but in the runtime call. Chirp became "let AI **be** the code." The CodeSpeak insight wasn't wrong — it pointed toward a deeper version of itself. If components can reason at runtime, you don't need a clever compiler. You need a thin shell and a live brain.
 
 Rook is a 215+ tool MCP bridge giving AI agents full programmatic control over Rhino and Grasshopper — geometry creation, canvas manipulation, a self-improving knowledge graph (919 GH components catalogued), multi-agent orchestration, and a 4-phase design cascade. Rook creates **zero** custom GH_Components; it manipulates existing ones via reflection.
 
