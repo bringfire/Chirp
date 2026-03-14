@@ -795,3 +795,163 @@ Rook knowledge system = optimizer (evolves few-shot demos from traces)
 | 2026-03-13 | Typed output pins ARE the structural constraint that makes LLM embedding safe | The component's registered outputs filter LLM flexibility through fixed types — downstream is protected. This is DSPy's Signature enforced physically by GH's runtime |
 | 2026-03-13 | Chirp = runtime library + creation tool. Rook is the component author. | Rook creates intelligent script components on the fly via chirp_create (~100 tokens). The Chirp runtime library (C# .dll) handles format/parse/validate/cache/trace. No YAML specs as human-authored files — the spec is Rook's internal representation |
 | 2026-03-13 | Compiled components are the graduation/distribution step, not the development step | Development happens as Rook-generated script components. Proven components graduate to compiled .gha for firm-wide distribution to non-Rook users |
+| 2026-03-13 | Reasoning output pin auto-added to every Chirp component | Exposes the LLM's chain-of-thought as a wireable GH output. Enables design review, teaching, and debugging. Reserved pin name "Reasoning" with collision detection |
+| 2026-03-13 | Chirp's unique value vs. Rook: reactive participation in the parametric graph | Rook has the same LLM reasoning + graph visibility, but operates imperatively. Chirp components re-solve automatically when inputs change — they participate in GH's reactive dataflow natively. Rook is the operator; Chirp is a node |
+| 2026-03-13 | Natural language as a first-class GH data type is the core product insight | Chirp's deepest value isn't "AI in a node" — it's that strings carrying design intent become wireable signals that propagate through the graph. "Brutalist" in a Panel → coordinated parameter shifts across the model |
+| 2026-03-13 | Discrete design (Wasp) identified as high-value integration target | Shape grammar aggregation has a gap between design intent and algorithm configuration. Chirp bridges it: semantic description → aggregation parameters (part ratios, field gradients, constraint modes). See "Wasp Integration" section |
+
+---
+
+## Where Chirp Shines: The Value Proposition (Refined)
+
+*Added 2026-03-13 after extended design discussion*
+
+### The Overlap Problem
+
+Rook (Claude via MCP) already has:
+- LLM reasoning about design decisions
+- Full GH graph visibility via `gh_snapshot`
+- Ability to create/wire components via `gh_execute_intent`
+- Domain knowledge about architecture, materials, structures
+
+So what does embedding an LLM inside a GH component add that Rook can't do from the outside?
+
+### The Answer: Reactive Semantic Parametrics
+
+**Rook is imperative.** It acts when asked: "Claude, I changed the span, update the beam depth." The relationships live in the conversation, not the graph. They're gone next session.
+
+**Chirp is declarative.** A Chirp component encodes the relationship `design_language → facade_parameters` as a persistent, visible, wired node on the canvas. When inputs change, it re-reasons automatically — no Claude session required. The intelligence is in the graph, not the chat.
+
+**The unique capability:** Natural language becomes a first-class data type in the parametric graph. A text Panel with `"brutalist, exposed concrete, heavy proportions"` becomes as powerful as a Number Slider — but it controls semantic intent instead of a single value.
+
+### The Design Language Pattern
+
+The most compelling use case: one text Panel drives an entire model's character.
+
+```
+┌──────────────────────────────────────────┐
+│ Panel: "brutalist, exposed concrete"     │
+└─────────────────┬────────────────────────┘
+                  │
+    ┌─────────────┼──────────────┐
+    │             │              │
+ ★ Chirp:     ★ Chirp:      ★ Chirp:
+ facade       structure     ground plane
+ params       expression    treatment
+    │             │              │
+    ▼             ▼              ▼
+ [GH facade]  [GH sizing]   [GH landscape]
+```
+
+Change the text to `"nordic minimalist, light timber, airy"` and every Chirp component re-reasons. The facade gets thinner modules, higher transparency. The structure hides connections. The landscape softens. One string drives the whole model's character.
+
+No traditional GH component maps "brutalist" to a reveal depth. No lookup table covers every aesthetic. The LLM generalizes.
+
+### Where Chirp Is NOT the Right Tool
+
+Anything with a closed-form solution. Don't use an LLM to compute structural deflection — there's an equation. Don't use it to subdivide a surface into equal panels — that's just math. Chirp belongs at the **decision points** where a human designer would normally pause, think about context, and make a judgment call they'd struggle to express as a formula.
+
+### The Reasoning Pin
+
+Every Chirp component auto-includes a `Reasoning` output pin exposing the LLM's chain of thought. Wire it to a Panel to see:
+
+> *"Art deco emphasizes bold geometric forms and pronounced shadow lines. Setting frame_depth=80mm for strong reveals, corner_radius=0 for sharp geometry, solid_ratio=0.85 for monumental opacity."*
+
+This makes Chirp components a **teaching tool** — junior designers see the relationship between design language and dimensional decisions made explicit. It's also the debugging interface — when outputs seem wrong, the reasoning shows why.
+
+---
+
+## Wasp Integration: Discrete Design with Semantic Configuration
+
+*Added 2026-03-13 — Safdie Architects context*
+
+### Why Wasp
+
+[Wasp](https://github.com/ar0551/Wasp) is a Grasshopper plugin for discrete design with modular aggregation. It enables procedural generation of complex structures from simple modular parts using shape grammar rules and constraint checking. The system is grounded in graph grammar theory (Klavins et al. 2004).
+
+Wasp is directly relevant to Safdie Architects' design methodology — Habitat 67 is the canonical example of modular/discrete architecture. The firm's work often involves modular units aggregated into complex spatial arrangements with structural, environmental, and programmatic constraints.
+
+### Wasp's Architecture
+
+**Core workflow:** Define parts → Define rules → Run aggregation → Check constraints
+
+**Key concepts:**
+- **Parts:** Geometry + connections (planes) + optional constraints
+- **Rules:** Directed graph grammar — `Part1|Conn1 → Part2|Conn2`
+- **Aggregation:** Stochastic (random), field-driven (scalar field prioritization), or graph-grammar (explicit sequence)
+- **Constraints:** Local (colliders, supports, adjacency, orientation) and global (plane bounds, mesh containment)
+
+**Three aggregation modes:**
+1. **Stochastic:** Random part selection, random rule application, constraint filtering
+2. **Field-driven:** Scalar field values prioritize connections — always picks highest field value. Creates gradient-aligned growth patterns
+3. **Graph-grammar:** Explicit rule sequences — fully deterministic
+
+### The Gap Chirp Fills
+
+Wasp's algorithm is powerful and well-designed. But every **decision upstream of the algorithm** is manual:
+
+| Manual Decision | What the Designer Sets | What They're Thinking |
+|---|---|---|
+| Part proportions | `wall=0.7, opening=0.2, roof=0.1` | "Mostly closed with scattered openings" |
+| Constraint mode | `mode=3` (local + global) | "I need structural validity" |
+| Field direction | `vector=(0,0,1)` | "Heavy base, lighter top" |
+| Field strength | `0.8` | "Strong vertical gradient" |
+| Target parts | `150` | "Dense enough to read as a pavilion" |
+| Rule activation | Enable/disable specific rules | "No openings next to corners" |
+
+The designer thinks in **intent** but Wasp needs **numbers**. That translation is currently done through experience and trial-and-error.
+
+### One Chirp Component Bridges the Gap
+
+```
+Signature: "design_intent, part_types, site_constraints
+            -> wall_ratio, opening_ratio, roof_ratio,
+               field_direction_x, field_direction_y, field_direction_z,
+               field_strength, constraint_mode, target_parts"
+```
+
+```
+┌────────────────────────────────────────────────┐
+│ Panel: "dense pavilion, 3m tall, mostly closed │
+│  walls with scattered openings for ventilation,│
+│  heavy base, lighter top"                      │
+└──────────────────────┬─────────────────────────┘
+                       │
+                ★ Chirp Component
+                       │
+     ┌─────────┬───────┼────────┬──────────┐
+     │         │       │        │          │
+  wall_ratio opening field_  field_    target_
+    0.7      ratio  direction strength   parts
+              0.2   (0,0,1)    0.8        150
+     │         │       │        │          │
+     ▼         ▼       ▼        ▼          ▼
+   [Wasp Parts    [Wasp Field      [Wasp Stochastic
+    Catalog]       Generation]      Aggregation]
+```
+
+The Reasoning pin outputs:
+
+> *"Dense pavilion with scattered openings suggests predominantly closed structure. 70/20/10 wall/opening/roof ratio gives ~1 opening per 3.5 wall panels — 'scattered' rather than regular. Vertical field direction (0,0,1) with strength 0.8 creates strong gradient: parts placed near ground first (heavy base). Lighter top emerges naturally as field weakens upward. Constraint mode 3 (local + global) ensures structural supports are checked."*
+
+### Why This Is Different From the Facade Pattern
+
+With the facade, Chirp maps aesthetics to proportions — subjective but relatively low-stakes. With Wasp, Chirp is mapping **design intent to algorithmic behavior**. The LLM isn't just picking numbers — it's reasoning about how those numbers will affect a generative process:
+
+- "Heavy base, light top" → vertical field gradient (the LLM understands how field-driven aggregation works conceptually)
+- "Scattered openings" → 20% ratio, not 50% (the LLM understands what "scattered" means in terms of density)
+- "Dense pavilion" → 150 parts, not 30 (the LLM reasons about what density means for a given scale)
+
+### Future: Rule Activation
+
+A second Chirp component could take the same design intent and output which **rule categories** to activate or deactivate. "Load-bearing wall: don't allow openings adjacent to corners" → the LLM translates structural intuition into rule state changes. This encodes the kind of design knowledge that's currently in the architect's head, not in the algorithm.
+
+### The Safdie Connection
+
+This isn't theoretical. Safdie's work is built on modular aggregation — units arranged according to structural, environmental, and spatial logic. The decisions about how modules aggregate (density gradients, opening distribution, structural continuity) are exactly the kind of context-dependent judgment calls that:
+1. Can't be reduced to a formula (each project is different)
+2. Require expertise to get right (structural, environmental, programmatic knowledge)
+3. Are currently done by manual parameter tuning in tools like Wasp
+4. Are exactly what LLMs are good at — synthesizing domain knowledge into specific parameter recommendations
+
+Chirp makes that expertise available as a reactive node in the parametric graph.
