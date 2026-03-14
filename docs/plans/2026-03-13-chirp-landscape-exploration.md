@@ -955,3 +955,88 @@ This isn't theoretical. Safdie's work is built on modular aggregation — units 
 4. Are exactly what LLMs are good at — synthesizing domain knowledge into specific parameter recommendations
 
 Chirp makes that expertise available as a reactive node in the parametric graph.
+
+---
+
+## The Reasoning Pin as Shared Context Bus
+
+*Added 2026-03-13 — emerged from design discussion about wiring Reasoning outputs*
+
+### Chain-of-Thought as a Wireable Signal
+
+The Reasoning pin started as a transparency feature — "see why the LLM chose those values." But in Grasshopper, every output is wireable. The moment you connect a Reasoning pin to another Chirp component's input, something qualitatively different happens: **the downstream LLM doesn't just get numbers, it gets the rationale that produced them.**
+
+### One Reasoning, Many Interpreters
+
+When a Reasoning output fans out to multiple downstream Chirp components, each reads the same rationale but interprets it through its own domain:
+
+```
+"dense pavilion, heavy base, scattered openings"
+         │
+    ★ Chirp: Aggregation Config
+         │
+         ├── wall_ratio=0.7 ──→ [Wasp Catalog]
+         ├── field_strength=0.8 ──→ [Wasp Field]
+         │
+         └── Reasoning: "heavy base → vertical gradient,
+                         scattered → 20% ratio, dense →
+                         150 parts for pavilion scale"
+                    │
+          ┌─────────┼──────────┬──────────────┐
+          │         │          │              │
+          ▼         ▼          ▼              ▼
+     ★ Structure  ★ MEP    ★ Envelope    ★ Critic
+
+     "heavy base    "dense    "heavy base   "aggregation
+      means more     lower     means less    targets 20%
+      load at        floors    glazing at    openings but
+      base →         need      base, more    clustering
+      deeper         more      at top →      detected on
+      beams          HVAC      thermal       south face →
+      below"         capacity" gradient      suggest
+                               follows       exclusion
+                               massing"      constraint"
+```
+
+Each downstream component extracts different implications from the same source rationale. The structural component cares about load distribution. MEP cares about density and occupancy. Envelope cares about transparency gradients. The critic evaluates whether the aggregation achieved its stated intent.
+
+### This Is How Design Teams Actually Work
+
+The architect says "heavy base, light top" in a meeting. The structural engineer hears "more load at the base." The facade consultant hears "less glazing at the base." The mechanical engineer hears "denser occupancy below." Same intent, domain-specific interpretations, coherent outcome.
+
+Chirp makes that coordination pattern **explicit and persistent in the graph** instead of implicit in a meeting that everyone remembers differently.
+
+### Two Parallel Data Streams
+
+Traditional GH carries one kind of signal: data (numbers, geometry, text as literal values). With Chirp's Reasoning pin, the graph carries two:
+
+| Stream | What flows | What it does |
+|--------|-----------|--------------|
+| **Data** (numbers, geometry) | `wall_ratio=0.7`, `field_strength=0.8` | Drives geometry and algorithm parameters |
+| **Reasoning** (semantic context) | "heavy base because...", "scattered means..." | Drives coherence between independent decisions |
+
+When a number fans out to multiple components, each gets the same value and uses it mechanically. When reasoning fans out, each component gets the same rationale but **interprets** it contextually. The LLM in each downstream node acts like a different discipline expert reading the same design brief.
+
+### Spatial Chain-of-Thought
+
+In DSPy, `ChainOfThought` is linear — reasoning flows forward through `forward()`. In LangGraph, it flows through code-defined edges. In Chirp on the GH canvas, **the designer decides which reasoning flows where by dragging wires:**
+
+```
+DSPy:     A.reasoning → B.reasoning → C.reasoning         (linear)
+
+Chirp/GH: A.Reasoning ──→ B (structural)
+              │
+              └──────────→ C (environmental)
+              │
+              └──────────→ D (critic)                      (graph)
+```
+
+The reasoning topology is a design decision in itself — visible and manipulable on the canvas. Route facade reasoning to the structural component but NOT to the landscape. Merge reasoning from two upstream components into a single downstream critic. The reasoning architecture becomes a design artifact alongside the geometry.
+
+This is genuinely novel. Nobody is doing spatial chain-of-thought composition in a visual dataflow graph where a non-programmer can rewire the reasoning flow by dragging connections.
+
+### Implications
+
+- **The Reasoning pin is not optional debugging output.** It's a shared context bus — the mechanism by which design coherence propagates across disciplines in a parametric model.
+- **Coordination without a coordinator.** The graph topology enforces that all downstream components work from the same intent. No meeting notes, no "did everyone get the memo."
+- **The graph has two layers.** One layer is the computation graph (numbers → geometry). The other is the reasoning graph (intent → coherence). They share the same canvas but do fundamentally different work.
