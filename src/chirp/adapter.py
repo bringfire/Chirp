@@ -13,7 +13,7 @@ from chirp.types import build_output_model, resolve_type
 
 
 class ChirpAdapter:
-    """Bridge between typed schemas and LLM calls, using DSPy's Predict pattern."""
+    """Bridge between typed schemas and LLM calls, using DSPy's ChainOfThought pattern."""
 
     def __init__(self) -> None:
         model = os.environ.get("CHIRP_MODEL", "anthropic/claude-sonnet-4-20250514")
@@ -62,8 +62,8 @@ class ChirpAdapter:
         # Build typed signature with output types from schema
         typed_sig = self._build_signature(signature, schema)
 
-        # Call LLM via DSPy Predict
-        predict = dspy.Predict(typed_sig)
+        # Call LLM via DSPy ChainOfThought (produces reasoning output)
+        predict = dspy.ChainOfThought(typed_sig)
         prediction = predict(**inputs)
 
         elapsed_ms = (time.perf_counter() - start) * 1000

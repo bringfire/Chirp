@@ -23,6 +23,19 @@ the `chirp_create` MCP tool.
 
 ## Workflow
 
+### Step 0: Preflight
+
+Before any design work, verify all services are up:
+
+1. **Rhino**: Call `rhino_ping`. If no response, tell the user to open Rhino.
+2. **Chirp adapter**: `curl -s http://localhost:9900/health`. If no response:
+   - Try starting it: `cd C:/Users/aryan/source/repos/Chirp && python -m chirp` (run in background)
+   - Wait up to 10 seconds, then re-check health
+   - If still down, tell the user and stop — do not proceed without the adapter
+3. **Grasshopper**: Verify GH is open (attempt `gh_snapshot` or similar). If not, tell the user.
+
+All three must be confirmed before moving to Step 1.
+
 ### Step 1: Decompose
 
 Ask the user for a design brief if not provided. Then decompose into domains:
