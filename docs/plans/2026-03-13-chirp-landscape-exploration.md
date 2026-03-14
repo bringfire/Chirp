@@ -1040,3 +1040,74 @@ This is genuinely novel. Nobody is doing spatial chain-of-thought composition in
 - **The Reasoning pin is not optional debugging output.** It's a shared context bus — the mechanism by which design coherence propagates across disciplines in a parametric model.
 - **Coordination without a coordinator.** The graph topology enforces that all downstream components work from the same intent. No meeting notes, no "did everyone get the memo."
 - **The graph has two layers.** One layer is the computation graph (numbers → geometry). The other is the reasoning graph (intent → coherence). They share the same canvas but do fundamentally different work.
+
+---
+
+## Reasoning Branching: What It Actually Means
+
+*Added 2026-03-14 — emerged from first working reasoning cascade demo*
+
+### The Problem With Numbers
+
+In traditional parametric design, you wire numbers. A spacing of `4.0` flows from one component to the next. But `4.0` is context-free — the downstream component doesn't know if it's 4.0 because of structural efficiency, aesthetic rhythm, site constraints, or cost. It just gets `4.0`.
+
+With Chirp, you wire **intent alongside value**. The Planner doesn't just output `ColumnSpacing = 3.6`. It outputs *why* — "timber beams work well at 3.6m, and 3 bays creates a 10.8m garden feature." When the Structure component receives that reasoning, it doesn't just size a beam for a 3.6m span. It sizes a beam for a *timber pergola carrying mature wisteria in a garden*. That's why it chose 240mm instead of the 200mm it chose for the steel walkway — same span range, completely different sizing rationale.
+
+### First Demo: What We Observed
+
+Three-component fan-out cascade (Planner → Structure + Envelope), tested with two briefs:
+
+| Brief | Structure Output | Envelope Output |
+|-------|-----------------|-----------------|
+| "covered walkway, steel, polycarbonate roof" | IPE 200 beams, 3m spacing, M16 bolts | 16mm polycarbonate, 1200mm module, 15% open |
+| "timber pergola, garden setting, wisteria coverage" | 240×120mm glulam, 3.6m spacing, stainless lag screws | Cedar 140×45 battens, 200mm spacing, 65% open |
+
+The same graph produced fundamentally different design systems from a single text change. Not because the numbers were recalculated — because the *reasoning* about what those numbers should be was re-derived from shifted intent.
+
+### Branching Is Parallel Interpretation
+
+When a Reasoning wire fans out to multiple components, you get something that mirrors how design teams actually work:
+
+1. The architect describes a vision
+2. The structural engineer interprets it through *their* lens
+3. The facade consultant interprets the *same* vision through a *different* lens
+4. Both produce domain-appropriate responses that are coherent with each other — not because they coordinated, but because they share the same design intent
+
+No single component "knows" the whole design. But coherence emerges from shared context. This is distributed cognition — the same pattern that makes real multi-disciplinary design work.
+
+### What This Unlocks
+
+**1. One word changes everything.** Swap "timber" for "steel" in the brief and every component re-reasons from scratch. You don't retune 50 sliders — the LLMs re-derive appropriate values from the shifted intent. The parametric model becomes *semantically* parametric.
+
+**2. Critic nodes.** A downstream Chirp component that receives ALL reasoning outputs from the cascade and checks for contradictions — "Structure assumes lightweight cladding but Envelope specified heavy stone panels." Automated cross-discipline conflict detection, live in the graph.
+
+**3. Multi-scale cascades.** Urban massing → building form → structural system → detail design. Each level's reasoning feeds the next. The detail designer knows it's working on a *civic plaza canopy in a seismic zone*, not just "a 12m cantilever."
+
+**4. Regulatory checking.** A Chirp component that reads the design reasoning and cross-references against code requirements — not just checking numbers, but understanding *what the design is trying to do* and whether that intent is code-compliant.
+
+**5. Design narrative generation.** A terminal node that reads all reasoning wires and produces a coherent design statement — the kind you'd put in a competition submission. Generated live as the model evolves.
+
+### How This Differs From Prompt Chaining
+
+This is **not** LangChain or LangGraph with a visual skin. The distinction matters:
+
+| Prompt chaining (LangChain etc.) | Chirp on GH canvas |
+|---|---|
+| LLM output is the ONLY data flowing | Reasoning coexists with numbers, geometry, booleans |
+| Chain topology defined in code | Topology defined by dragging wires — non-programmers can rewire reasoning flow |
+| LLM-only pipeline | Hybrid: LLM nodes interleave with deterministic GH components (Multiply, Offset, Boolean) |
+| Ephemeral — runs once, produces result | Persistent — the graph lives across sessions, sliders re-trigger reasoning |
+| No spatial exploration | Sliders = instant re-reasoning over the parameter space |
+
+The critical difference: **the LLM is embedded inside the parametric graph alongside deterministic components.** Reasoning coexists with Booleans, Panels, sliders, Breps. You can branch reasoning to an LLM node AND branch a number to a standard `Multiply` component in the same graph. Semantic and parametric in one canvas.
+
+### The Deeper Principle
+
+Traditional Grasshopper has one data layer: geometry and numbers. Chirp adds a second: **natural language carrying design intent**. These two layers flow through the same graph but serve different purposes:
+
+- **Numbers** drive geometry
+- **Reasoning** drives coherence
+
+The graph becomes a **thinking graph**, not just a computing graph. It doesn't just calculate what the design IS — it carries the reasoning about WHY the design is what it is, and that reasoning propagates, branches, and compounds as it flows through the canvas.
+
+This is the thing Chirp provides that Rook cannot: Rook sees the graph from outside and manipulates it. Chirp puts intelligence *inside* the graph nodes, making reasoning a first-class wireable signal that the designer can route, branch, merge, and inspect — just like any other data type in Grasshopper.
