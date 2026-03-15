@@ -1343,3 +1343,88 @@ This is what separates Chirp from autonomous AI pipelines. The designer isn't ju
 - **Optional** — empty Correction pin = no change, remove the Editor = direct wire
 
 The reasoning chain is collaborative, not autonomous. The human and the LLMs trade control at every junction the designer chooses to monitor.
+
+---
+
+## Enforcement Architecture: Making Claude Follow the Rules
+
+*Added 2026-03-15 — ensuring consistency across sessions*
+
+### The Problem
+
+Claude Code forgets. YAML files it "should" read, knowledge store entries it "should" query, conventions it "should" follow — all unreliable without structural enforcement. Categories, pin patterns, and prompt strategies defined in documentation will be ignored in practice unless the system forces compliance.
+
+### The Enforcement Stack
+
+Four layers, each catching what the one above might miss:
+
+| Layer | Mechanism | What it enforces | Reliability |
+|---|---|---|---|
+| **Tool** (`chirp_create`) | Required `category` param, server-side validation | Can't create without a valid category. Tool handles pin templates, colors, DSPy module. | Mechanical — impossible to bypass |
+| **Skill** (`/chirp`, `/chirp-cascade`) | Structured workflow with `<HARD-GATE>` | Step-by-step process: preflight → category → design → create → verify | High — enforced by skill text |
+| **SessionStart hook** | Context injection at session start | Claude always knows categories exist, knows to use `/chirp` skill | Medium — awareness, not enforcement |
+| **PreToolUse hook** (optional) | Validates `chirp_create` calls | Additional guardrails (e.g., Interpreter must have Reasoning input) | Mechanical — blocks invalid calls |
+
+### Layer 1: The Tool (Foundation)
+
+`chirp_create` requires a `category` parameter. Without it, the tool returns an error. The tool internally:
+- Applies the category's pin template (universal pins auto-added)
+- Selects the DSPy module (ChainOfThought, Predict, MultiChainComparison)
+- Sets the prompt strategy for the adapter
+- Assigns visual treatment (color, icon, Message label)
+
+Claude only provides: **category, domain, and domain-specific pins**. Everything else is determined by the category definition inside the tool.
+
+### Layer 2: The Skills
+
+**`/chirp`** — Single component creation:
+1. Preflight (Rhino, adapter, GH)
+2. Determine category from user's description
+3. Design domain-specific pins and signature
+4. Create via `chirp_create` with category
+5. Verify output
+
+**`/chirp-cascade`** — Multi-component workflows:
+1. Preflight
+2. Decompose brief into disciplines
+3. Design cascade topology
+4. Build in dependency order, each component via the category system
+5. Wire Reasoning pins, test coherence
+
+The skills contain `<HARD-GATE>` directives preventing creation before design approval.
+
+### Layer 3: SessionStart Hook
+
+Injects category awareness into every Rook session:
+
+```
+"Chirp component categories are available: planner, interpreter, critic,
+ narrator, classifier, gate, editor. When creating Chirp components,
+ use the /chirp skill for single components or /chirp-cascade for
+ multi-component workflows."
+```
+
+This ensures Claude knows the system exists even in conversations that don't start with a Chirp request.
+
+### Layer 4: PreToolUse Hook (Optional)
+
+A hookify rule that validates `chirp_create` calls before they execute:
+- Category is one of the 7 valid values
+- Reserved pin names aren't used for domain pins
+- Interpreter/Critic categories have Reasoning inputs
+
+This is belt-and-suspenders — the tool already validates, but the hook catches edge cases.
+
+### Why Not Just Documentation?
+
+The brainstorming skill (superpowers plugin) demonstrates the pattern: it uses a `<HARD-GATE>` in the skill text to prevent premature implementation. This works *most* of the time, but Claude can and does ignore it. The mechanical layers (tool validation, hooks) make compliance involuntary.
+
+For Chirp, the categories aren't suggestions — they're the architecture. A component without a category has no color, no icon, no message label, no appropriate DSPy module. The tool should refuse to create it, not just hope Claude remembers.
+
+### Categories Are Claude's Vocabulary, Not the User's
+
+The user never needs to say "create an Interpreter." They say "I need to think about drainage for this pergola." Claude recognizes this as an Interpreter-shaped problem and selects the category internally.
+
+The categories are invisible scaffolding — they give Claude consistency and predictability without the user learning a taxonomy. The user learns ONE gesture: describe the design problem. The skill determines the category. The tool enforces the template.
+
+Over time, designers naturally pick up the vocabulary from seeing labeled components on canvas ("Planner: Pergola Spacing", "Interpreter: Drainage"). The labels become a shared language through use, not study — like layer colors in Rhino.
