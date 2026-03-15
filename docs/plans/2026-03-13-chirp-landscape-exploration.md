@@ -1268,6 +1268,29 @@ The Interpreter reads the upstream reasoning ("timber pergola, 3.6m spans...") A
 
 **Implementation:** `chirp_create` auto-adds a `Correction` pin (type: string, optional) to every component, same as it auto-adds `Reasoning` to outputs. The adapter prepends correction text to the LLM prompt when the input is non-empty.
 
+**Critical: corrections are per-node, not global.** This is a fundamental design property. Changing the upstream Panel (the design brief) re-triggers the entire cascade — every downstream node re-reasons. But the Correction pin targets a single node. If you correct the Structure Interpreter to use steel, the Envelope Interpreter still works from the original upstream reasoning. You're steering one discipline without disturbing the others — exactly how design review works in practice.
+
+**Three states of the Correction pin:**
+
+| State | Behavior |
+|---|---|
+| **Disconnected** (no Panel wired) | Component reasons normally. The pin exists but is inert. Zero overhead. |
+| **Connected, Panel empty** | Same as disconnected — empty string treated as no correction. |
+| **Connected, Panel has text** | Adapter includes both upstream reasoning AND the correction in the LLM prompt. The LLM reconciles them, prioritizing the correction. Output Reasoning explains the reconciliation. |
+
+**What "reconciliation" means:** The LLM doesn't blindly apply the correction text. It *reasons about* the relationship between the upstream context and the human's override. If the Planner said "timber at 3.6m spacing" and the correction says "use steel," the Structure Interpreter doesn't just swap the word — it re-derives: "steel allows longer spans → spacing increases to 6m, beam depth decreases to 180mm, connection type changes to bolted." The Reasoning output shows this chain of consequence so the designer can verify it propagated correctly.
+
+**Corrections as persistent design decisions:** The Panel stays on canvas as a visible record. When the designer returns to the definition after weeks, the Correction Panels show exactly where they intervened and why. This is not debugging scaffolding — it's the design narrative embedded in the graph.
+
+**The practical workflow:**
+1. Run the cascade. Read all the Reasoning outputs.
+2. Structure looks wrong — it assumed lightweight cladding.
+3. Drop a Panel, connect it to Structure's Correction pin.
+4. Type: "Heavy stone cladding, 80kg/m². Size for this."
+5. Structure re-solves. New Reasoning explains the heavier load. New BeamDepth reflects it.
+6. Envelope Interpreter is untouched — it already assumed stone.
+7. Check the Critic. If it flagged a conflict before, does it resolve now?
+
 #### 2. The Editor Node (7th Category)
 
 A dedicated review checkpoint. Takes upstream `Reasoning` as input, displays it for human review, accepts a `Correction` (Panel), and produces reconciled `Reasoning` as output. The Editor's own Reasoning output shows *how* it reconciled the original with the correction, so the designer can verify before propagation continues.
