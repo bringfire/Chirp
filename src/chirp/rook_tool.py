@@ -11,6 +11,56 @@ from __future__ import annotations
 import json
 import os
 
+# ── Category definitions ─────────────────────────────────────────────────
+# Each category defines the DSPy module and prompt strategy used at runtime.
+# The adapter reads the category to select the right reasoning approach.
+
+CATEGORIES: dict[str, dict] = {
+    "planner": {
+        "module": "ChainOfThought",
+        "description": "Translates a design brief into structured parameters",
+        "prompt_prefix": "You are a design planner. Given a brief, determine appropriate parameters.",
+    },
+    "interpreter": {
+        "module": "ChainOfThought",
+        "description": "Reads upstream reasoning through a domain-specific lens",
+        "prompt_prefix": "You are a domain specialist interpreting a design reasoning chain. "
+                         "If a correction is provided, prioritize it over upstream assumptions "
+                         "and explain the reconciliation.",
+    },
+    "critic": {
+        "module": "ChainOfThought",
+        "description": "Checks consistency across multiple reasoning streams",
+        "prompt_prefix": "You are a design critic evaluating coherence across disciplines. "
+                         "Identify contradictions, score overall coherence, and flag conflicts.",
+    },
+    "narrator": {
+        "module": "ChainOfThought",
+        "description": "Synthesizes multiple reasoning streams into a design narrative",
+        "prompt_prefix": "You are a design narrator. Synthesize the reasoning streams into "
+                         "a coherent, presentation-ready design statement.",
+    },
+    "classifier": {
+        "module": "Predict",
+        "description": "Classifies data into categories with confidence",
+        "prompt_prefix": "Classify the input into the most appropriate category.",
+    },
+    "gate": {
+        "module": "Predict",
+        "description": "Activates or deactivates rules based on reasoning",
+        "prompt_prefix": "Based on the design reasoning, determine which rules should be active.",
+    },
+    "editor": {
+        "module": "ChainOfThought",
+        "description": "Reconciles upstream reasoning with human corrections",
+        "prompt_prefix": "You are a design editor. Reconcile the upstream reasoning with "
+                         "the human's correction. The correction takes priority. "
+                         "Explain what changed and why.",
+    },
+}
+
+VALID_CATEGORIES = set(CATEGORIES.keys())
+
 # GH C# type mappings: chirp type string → C# type
 CSHARP_TYPE_MAP: dict[str, str] = {
     "int": "int",
@@ -76,6 +126,8 @@ def chirp_create(
     pins_in: list[str],
     pins_out: list[str],
     signature: str,
+    category: str,
+    name: str | None = None,
     deterministic_code: str | None = None,
     port: int | None = None,
 ) -> dict:
@@ -85,6 +137,10 @@ def chirp_create(
         pins_in: Input pin definitions, e.g. ["SurfaceDesc:string", "Intent:string"]
         pins_out: Output pin definitions, e.g. ["UCount:int", "VCount:int", "Grading:float"]
         signature: DSPy signature string, e.g. "surface_description, intent -> u_count, v_count, grading"
+        category: Component category — one of: planner, interpreter, critic,
+                  narrator, classifier, gate, editor. Determines DSPy module,
+                  prompt strategy, and visual treatment.
+        name: Optional display name / NickName for the component.
         deterministic_code: Optional C# code to run after LLM outputs are assigned.
                            Has access to all input/output fields.
         port: Chirp adapter port (default: CHIRP_PORT env var or 9900)
@@ -94,7 +150,18 @@ def chirp_create(
             script: The complete C# source code for the script component
             pins_in: List of {name, type} dicts for input pin configuration
             pins_out: List of {name, type} dicts for output pin configuration
+            category: The validated category string
+            category_info: Category metadata (module, description, prompt_prefix)
     """
+    # ── Validate category ────────────────────────────────────────────
+    category = category.lower().strip()
+    if category not in VALID_CATEGORIES:
+        raise ValueError(
+            f"Invalid category: {category!r}. "
+            f"Must be one of: {', '.join(sorted(VALID_CATEGORIES))}"
+        )
+    category_info = CATEGORIES[category]
+
     if port is None:
         port = int(os.environ.get("CHIRP_PORT", "9900"))
 
@@ -102,37 +169,55 @@ def chirp_create(
     out_pins = [parse_pin(p) for p in pins_out]
 
     # Validate input types
-    for name, type_str in in_pins:
+    for pin_name, type_str in in_pins:
         if type_str not in CSHARP_TYPE_MAP:
-            raise ValueError(f"Unknown input type: {type_str!r} for pin {name!r}")
+            raise ValueError(f"Unknown input type: {type_str!r} for pin {pin_name!r}")
 
-    # Reject output pin names that collide with the auto-added Reasoning pin
-    for name, _ in out_pins:
-        if name.lower() == "reasoning":
+    # Reject reserved output pin names
+    for pin_name, _ in out_pins:
+        if pin_name.lower() == "reasoning":
             raise ValueError(
-                f"Output pin name {name!r} is reserved (auto-added for LLM chain-of-thought). "
+                f"Output pin name {pin_name!r} is reserved (auto-added for LLM chain-of-thought). "
                 f"Use a different name like 'Rationale' or 'Explanation'."
             )
 
+    # Reject reserved input pin names
+    for pin_name, _ in in_pins:
+        if pin_name.lower() == "correction":
+            raise ValueError(
+                f"Input pin name {pin_name!r} is reserved (auto-added for human corrections). "
+                f"Use a different name like 'Override' or 'Adjustment'."
+            )
+
+    # ── Auto-add Correction input pin ────────────────────────────────
+    # Correction is always the last input — human override, optional.
+    all_in_pins = list(in_pins) + [("Correction", "string")]
+
     # Build schema from output pins
     schema = {}
-    for name, type_str in out_pins:
+    for pin_name, type_str in out_pins:
         adapter_type = ADAPTER_TYPE_MAP.get(type_str)
         if adapter_type is None:
             raise ValueError(f"Unknown output type: {type_str!r}")
-        schema[_to_snake(name)] = adapter_type
+        schema[_to_snake(pin_name)] = adapter_type
 
-    # Generate the script
-    script = _generate_script(in_pins, out_pins, signature, schema, deterministic_code, port)
+    # Generate the script — includes Correction in inputs, Reasoning in outputs
+    script = _generate_script(all_in_pins, out_pins, signature, schema, deterministic_code, port, category)
 
-    # Reasoning pin is always appended — exposes the LLM's chain of thought
-    all_out_pins = [{"name": n, "type": t} for n, t in out_pins]
-    all_out_pins.append({"name": "Reasoning", "type": "string"})
+    # Build final pin lists for GH component configuration
+    all_out_pins_list = [{"name": n, "type": t} for n, t in out_pins]
+    all_out_pins_list.append({"name": "Reasoning", "type": "string"})
+
+    all_in_pins_list = [{"name": n, "type": t} for n, t in in_pins]
+    all_in_pins_list.append({"name": "Correction", "type": "string"})
 
     return {
         "script": script,
-        "pins_in": [{"name": n, "type": t} for n, t in in_pins],
-        "pins_out": all_out_pins,
+        "pins_in": all_in_pins_list,
+        "pins_out": all_out_pins_list,
+        "category": category,
+        "category_info": category_info,
+        "name": name or f"Chirp {category.title()}",
     }
 
 
@@ -153,6 +238,7 @@ def _generate_script(
     schema: dict[str, str],
     deterministic_code: str | None,
     port: int,
+    category: str = "planner",
 ) -> str:
     """Generate a GH_ScriptInstance C# script for the RhinoCode C# Script component."""
     lines: list[str] = []
@@ -183,6 +269,7 @@ def _generate_script(
 
     # RunScript with typed parameters
     # Inputs: object params (cast inside). Outputs: ref object params.
+    # Correction is always the last input — human override, optional.
     # Reasoning is always the last output — exposes the LLM's chain of thought.
     in_params = ", ".join(f"object {name}" for name, _ in in_pins)
     out_param_list = [f"ref object {name}" for name, _ in out_pins]
@@ -195,15 +282,23 @@ def _generate_script(
     w("        {")
 
     # Build inputs dict — cast from object to expected type
+    # Correction is included in in_pins but handled specially below
+    domain_pins = [(n, t) for n, t in in_pins if n != "Correction"]
     w("            var inputs = new Dictionary<string, object>")
     w("            {")
-    for i, (name, type_str) in enumerate(in_pins):
-        comma = "," if i < len(in_pins) - 1 else ""
+    for i, (name, type_str) in enumerate(domain_pins):
+        comma = "," if i < len(domain_pins) - 1 else ""
         if ADAPTER_TYPE_MAP.get(type_str) == "string" and type_str != "string":
             w(f'                {{ "{_to_snake(name)}", {name}?.ToString() ?? "" }}{comma}')
         else:
             w(f'                {{ "{_to_snake(name)}", {name} ?? (object)"" }}{comma}')
     w("            };")
+    w()
+
+    # Correction — only include when non-empty (per-node human override)
+    w('            var correctionText = Correction?.ToString() ?? "";')
+    w('            if (!string.IsNullOrWhiteSpace(correctionText))')
+    w('                inputs["correction"] = correctionText;')
     w()
 
     # Schema — use verbatim string to avoid escaping issues
@@ -212,13 +307,15 @@ def _generate_script(
     w(f'                @"{schema_json.replace(chr(34), chr(34)+chr(34))}");')
     w()
 
-    # Request
+    # Request — includes category for adapter module/prompt selection
     w("            var request = new Dictionary<string, object>")
     w("            {")
     escaped_sig = signature.replace('"', '""')
     w(f'                {{ "signature", @"{escaped_sig}" }},')
     w('                { "inputs", inputs },')
-    w('                { "schema", schema }')
+    w('                { "schema", schema },')
+    escaped_cat = category.replace('"', '""')
+    w(f'                {{ "category", @"{escaped_cat}" }}')
     w("            };")
     w()
 

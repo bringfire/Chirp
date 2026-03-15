@@ -12,8 +12,51 @@ import dspy
 from chirp.types import build_output_model, resolve_type
 
 
+# Module selection per category
+_MODULE_MAP: dict[str, type] = {
+    "ChainOfThought": dspy.ChainOfThought,
+    "Predict": dspy.Predict,
+}
+
+# Category prompt prefixes — injected into signature instructions
+_CATEGORY_PROMPTS: dict[str, str] = {
+    "planner": "You are a design planner. Given a brief, determine appropriate parameters.",
+    "interpreter": (
+        "You are a domain specialist interpreting a design reasoning chain. "
+        "If a correction is provided, prioritize it over upstream assumptions "
+        "and explain the reconciliation."
+    ),
+    "critic": (
+        "You are a design critic evaluating coherence across disciplines. "
+        "Identify contradictions, score overall coherence, and flag conflicts."
+    ),
+    "narrator": (
+        "You are a design narrator. Synthesize the reasoning streams into "
+        "a coherent, presentation-ready design statement."
+    ),
+    "classifier": "Classify the input into the most appropriate category.",
+    "gate": "Based on the design reasoning, determine which rules should be active.",
+    "editor": (
+        "You are a design editor. Reconcile the upstream reasoning with "
+        "the human's correction. The correction takes priority. "
+        "Explain what changed and why."
+    ),
+}
+
+# Default DSPy module per category
+_CATEGORY_MODULES: dict[str, str] = {
+    "planner": "ChainOfThought",
+    "interpreter": "ChainOfThought",
+    "critic": "ChainOfThought",
+    "narrator": "ChainOfThought",
+    "classifier": "Predict",
+    "gate": "Predict",
+    "editor": "ChainOfThought",
+}
+
+
 class ChirpAdapter:
-    """Bridge between typed schemas and LLM calls, using DSPy's ChainOfThought pattern."""
+    """Bridge between typed schemas and LLM calls, using DSPy modules."""
 
     def __init__(self) -> None:
         model = os.environ.get("CHIRP_MODEL", "anthropic/claude-sonnet-4-20250514")
@@ -29,6 +72,7 @@ class ChirpAdapter:
         inputs: dict,
         schema: dict[str, str],
         *,
+        category: str | None = None,
         use_cache: bool | None = None,
     ) -> dict:
         """Call the LLM with a signature and inputs, return validated typed outputs.
@@ -37,6 +81,8 @@ class ChirpAdapter:
             signature: DSPy signature string, e.g. "surface_description, intent -> u_count, v_count"
             inputs: Input values keyed by signature input field names.
             schema: Output field types, e.g. {"u_count": "int", "v_count": "int"}
+            category: Component category (planner, interpreter, etc.) — determines
+                      DSPy module and prompt strategy.
             use_cache: Override cache behavior for this call.
 
         Returns:
@@ -59,11 +105,25 @@ class ChirpAdapter:
 
         start = time.perf_counter()
 
-        # Build typed signature with output types from schema
-        typed_sig = self._build_signature(signature, schema)
+        # Handle correction — prepend to signature instructions if present
+        correction = inputs.pop("correction", None)
+        effective_sig = signature
+        if correction and str(correction).strip():
+            effective_sig = f"{signature}\n\nHUMAN CORRECTION (takes priority): {correction}"
 
-        # Call LLM via DSPy ChainOfThought (produces reasoning output)
-        predict = dspy.ChainOfThought(typed_sig)
+        # Build typed signature with output types from schema
+        # Prepend category prompt if available
+        cat = (category or "").lower().strip()
+        prompt_prefix = _CATEGORY_PROMPTS.get(cat, "")
+        if prompt_prefix:
+            effective_sig = f"{prompt_prefix}\n\n{effective_sig}"
+
+        typed_sig = self._build_signature(effective_sig, schema)
+
+        # Select DSPy module based on category
+        module_name = _CATEGORY_MODULES.get(cat, "ChainOfThought")
+        module_cls = _MODULE_MAP.get(module_name, dspy.ChainOfThought)
+        predict = module_cls(typed_sig)
         prediction = predict(**inputs)
 
         elapsed_ms = (time.perf_counter() - start) * 1000

@@ -24,6 +24,7 @@ class CallRequest(BaseModel):
     signature: str
     inputs: dict
     schema_: dict[str, str] = Field(alias="schema")
+    category: str | None = None
     cache: bool | None = None
 
 
@@ -47,6 +48,7 @@ def chirp_call(req: CallRequest):
             signature=req.signature,
             inputs=req.inputs,
             schema=req.schema_,
+            category=req.category,
             use_cache=req.cache,
         )
         tracer.log(
@@ -81,6 +83,8 @@ class CreateRequest(BaseModel):
     pins_in: list[str]
     pins_out: list[str]
     signature: str
+    category: str
+    name: str | None = None
     deterministic_code: str | None = None
     port: int | None = None
 
@@ -92,6 +96,8 @@ def chirp_create_endpoint(req: CreateRequest):
             pins_in=req.pins_in,
             pins_out=req.pins_out,
             signature=req.signature,
+            category=req.category,
+            name=req.name,
             deterministic_code=req.deterministic_code,
             port=req.port,
         )
