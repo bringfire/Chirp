@@ -569,6 +569,134 @@ Standard Script Component (current):                 ChirpComponent (proposed):
 
 ---
 
+## Why Not Script Components — The Deeper Argument
+
+### No Runtime Compilation
+
+The current script component approach has a hidden cost: **RhinoCode compiles C# on every file open.** The lifecycle is:
+
+1. `chirp_create` generates a C# source string in Python
+2. String is sent over HTTP to the script component via `SetSource()`
+3. RhinoCode stores the source in memory
+4. RhinoCode compiles it into an in-memory assembly
+5. The compiled `RunScript` method executes on each solve
+6. On save, the source string is serialized into the .gh file
+7. On reopen, the source is deserialized and recompiled
+
+Nothing ever hits disk as a `.cs` file — it's strings in memory and in the .gh binary. But the compilation step happens every time the file opens, and compilation errors are possible if the environment changes.
+
+With a compiled `ChirpComponent`, steps 1-5 disappear. The HTTP call logic is baked into the .rhp plugin at build time. No source strings, no RhinoCode compiler, no runtime assembly generation. Faster load, zero compilation errors.
+
+### The LLM Replaces the Code
+
+The script component's C# code is always the same ~30 lines of HTTP boilerplate. The actual intelligence lives in the Chirp adapter (Python/DSPy) on port 9900. The C# is a thin pipe — serialize inputs, POST, deserialize outputs.
+
+In a `ChirpComponent`, that pipe logic is compiled once into `SolveInstance()`. There's nothing to generate per-component because there's nothing unique per-component in the C# — the uniqueness is in the **signature, schema, and pins**, which are data, not code.
+
+The shift: **"let AI write the code" → "let AI be the code."** There is no code to write because the LLM reasoning at runtime IS the component logic.
+
+---
+
+## Pin-Agnostic SolveInstance
+
+A critical design insight: `SolveInstance` never hardcodes pin names. It discovers them at runtime.
+
+### The Script Component Problem
+
+Script components compile `RunScript` with hardcoded parameter names:
+```csharp
+void RunScript(string Brief, string Correction, ref int Span, ref int Depth)
+```
+Add a pin → you MUST update the script → requires recompilation. Claude must rework the internals every time pins change.
+
+### The ChirpComponent Solution
+
+`SolveInstance` iterates over whatever pins currently exist:
+```csharp
+protected override void SolveInstance(IGH_DataAccess DA)
+{
+    // Collect ALL inputs dynamically — whatever they are right now
+    var inputs = new Dictionary<string, object>();
+    for (int i = 0; i < Params.Input.Count; i++)
+    {
+        object val = null;
+        DA.GetData(i, ref val);
+        inputs[ToSnakeCase(Params.Input[i].NickName)] = val?.ToString();
+    }
+
+    // POST to adapter with signature + inputs + schema
+    var response = CallAdapter(_signature, inputs, _schema);
+
+    // Distribute ALL outputs dynamically — whatever they are right now
+    for (int i = 0; i < Params.Output.Count; i++)
+    {
+        var key = ToSnakeCase(Params.Output[i].NickName);
+        if (response.Outputs.TryGetValue(key, out var val))
+            DA.SetData(i, val);
+    }
+}
+```
+
+Pin names map to DSPy signature fields via snake_case conversion (`SeismicZone` → `seismic_zone`). Adding a pin doesn't require touching any compiled code — the loop picks it up automatically on the next solve.
+
+**The only thing that must stay in sync is the signature string** — it must list the same fields the pins provide. This can be auto-rebuilt in `VariableParameterMaintenance()`:
+
+```csharp
+public void VariableParameterMaintenance()
+{
+    var ins = Params.Input
+        .Where(p => p.NickName != "Correction")  // skip universal pin
+        .Select(p => ToSnakeCase(p.NickName));
+    var outs = Params.Output
+        .Where(p => p.NickName != "Reasoning")    // skip universal pin
+        .Select(p => ToSnakeCase(p.NickName));
+    _signature = $"{string.Join(", ", ins)} -> {string.Join(", ", outs)}";
+}
+```
+
+---
+
+## Manual Editability Without Claude
+
+### What a designer can do manually (no Claude needed):
+
+| Action | How | Works? |
+|---|---|---|
+| Rename the component | Double-click NickName | Yes, standard GH |
+| Wire inputs/outputs | Drag connections | Yes, standard GH |
+| Lock/unlock, hide/show | Right-click | Yes, standard GH |
+| Move, copy, group | Canvas interaction | Yes, standard GH |
+| Change category | Right-click → Change Category | Yes (custom menu) |
+| View reasoning | Right-click → View Reasoning / double-click | Yes (custom menu + handler) |
+| Add/remove pins via ZUI | Right-click → add parameter | Partially — see below |
+
+### Pin editing: works with guardrails
+
+When a user adds a pin via GH's ZUI (right-click → insert parameter):
+1. GH creates the pin with a default name ("New Param")
+2. User renames it (e.g., "SeismicZone")
+3. `VariableParameterMaintenance()` fires, auto-rebuilds the signature
+4. The schema defaults new output pins to `string` type
+5. Next solve includes the new field in the adapter call
+
+**What the user CAN'T do manually:**
+- Edit the signature phrasing (the descriptive version vs bare field names)
+- Change output type mappings in the schema (`int` vs `float` vs `string`)
+- Change the adapter endpoint
+- Edit the component's solve logic (there's no script to open)
+
+### Design decision: configured, not hand-coded
+
+A `ChirpComponent` is more like a **configured instrument** than an editable script. The user describes what they need, Claude configures it. If they need to tweak it, they tell Claude "add a seismic zone input" and Claude updates pin + signature + schema in one call.
+
+For power users who want direct access without Claude, a right-click **"Edit Chirp Component…"** dialog could expose signature, schema, and pins in one form. This is a Phase 3 feature — not essential for v1.
+
+### What this preserves
+
+The important thing: **the component is not a black box.** The user can see every pin, read every output, inspect reasoning, change the category, rename things, rewire the graph. They just can't edit the HTTP call logic, which they'd never want to anyway. The meaningful flexibility (what the LLM reasons about) is in the signature and schema — and those can be surfaced through a dialog when needed.
+
+---
+
 ## Open Questions
 
 1. **Where does ChirpComponent live?** In `src/Rook/` (the companion plugin) or in a new `src/Chirp/` C# project? The companion plugin already loads into GH — adding here is simplest. But Chirp might deserve its own .rhp for independent deployment.
@@ -580,3 +708,5 @@ Standard Script Component (current):                 ChirpComponent (proposed):
 4. **Correction pin: always visible or auto-hide?** If the Correction input is always visible, every component has an unused pin. If it auto-hides when disconnected, it's cleaner but less discoverable. Lean: always visible but `Optional = true` so no warnings when empty.
 
 5. **How does `chirp_create` talk to the new component?** Currently it generates C# script code via `gh_edit`. With a compiled component, it needs to: (a) create an instance of `ChirpComponent` by GUID, (b) set its category/signature/schema/pins via reflection or a dedicated endpoint. The GH handler needs a new route or an extension to `/gh/edit`.
+
+6. **Signature auto-sync vs explicit control?** `VariableParameterMaintenance()` can auto-rebuild the signature from current pin names. This is convenient for manual pin editing but loses any descriptive phrasing in the signature. Alternative: only auto-sync when a flag is set, otherwise require Claude or the Edit dialog to update the signature. Lean: auto-sync as default, with an option to lock the signature for advanced use.
