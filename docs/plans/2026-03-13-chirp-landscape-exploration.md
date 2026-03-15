@@ -1236,3 +1236,87 @@ Critic ──→ Planner (1:1 feedback loop — critic flags issues, planner rev
 ```
 
 These aren't enforced — any output can wire to any input. But knowing the natural patterns lets Claude suggest wiring and lets the user think in terms of design process rather than pin names.
+
+---
+
+## Human-in-the-Loop: Steering the Reasoning Chain
+
+*Added 2026-03-14 — the mechanism that keeps the human in control*
+
+### The Problem
+
+Without human intervention points, a reasoning cascade is fire-and-forget. The designer sets a brief, the chain runs, and the outputs are whatever the LLMs decided. If the Planner's reasoning drifts — "timber" when the budget demands steel — every downstream component inherits that drift. The designer only discovers the problem at the end, in the geometry.
+
+The chain needs steering points where the human can read the reasoning, correct it, and watch the correction propagate — **before** it reaches geometry.
+
+### Two Mechanisms, Both Active
+
+#### 1. The Correction Pin (Universal)
+
+Every Chirp component gets an optional `Correction` input pin. When connected (typically to a Panel), the LLM treats the human's text as a priority override that modifies its reasoning. When empty or disconnected, the component behaves exactly as it does today — no overhead, no change.
+
+```
+Planner ──Reasoning──→ Structure Interpreter ──→ ...
+                              ↑
+                         Panel: "Use steel, not timber.
+                          Budget constraint."
+```
+
+The Interpreter reads the upstream reasoning ("timber pergola, 3.6m spans...") AND the correction ("use steel, budget constraint") and reconciles them. Its output reasoning reflects the override: "Overriding upstream timber recommendation per budget constraint. Steel IPE 200 at 3m spacing..."
+
+**When to use:** Lightweight nudges on specific components. The designer spots one wrong assumption and corrects it without restructuring the graph.
+
+**Implementation:** `chirp_create` auto-adds a `Correction` pin (type: string, optional) to every component, same as it auto-adds `Reasoning` to outputs. The adapter prepends correction text to the LLM prompt when the input is non-empty.
+
+#### 2. The Editor Node (7th Category)
+
+A dedicated review checkpoint. Takes upstream `Reasoning` as input, displays it for human review, accepts a `Correction` (Panel), and produces reconciled `Reasoning` as output. The Editor's own Reasoning output shows *how* it reconciled the original with the correction, so the designer can verify before propagation continues.
+
+| | |
+|---|---|
+| **Inputs** | `Reasoning` (string) + `Correction` (string, from Panel) |
+| **Outputs** | `Reasoning` (string — reconciled output) |
+| **Role** | Explicit review checkpoint. Makes human steering visible on the canvas. |
+
+```
+Planner ──Reasoning──→ [Editor] ──Reasoning──→ Structure Interpreter
+                          ↑                          │
+                     Panel: "Steel, not         Interpreter output
+                      timber. Also add            is also visible
+                      seismic bracing."           before it feeds
+                                                  downstream.
+```
+
+**When to use:** Critical decision points where the designer wants to review and approve reasoning before it fans out to multiple downstream components. Place an Editor between the Planner and the fan-out, and every discipline inherits the corrected intent.
+
+**The key difference from the Correction pin:** The Editor is *visible on the canvas as a node*. Anyone looking at the graph can see exactly where human steering happened and what was changed. The Correction pin is invisible unless you click on the component. For auditable design processes — competition submissions, regulatory reviews — the Editor creates a legible record of human judgment in the graph.
+
+### Both Together
+
+The two mechanisms complement each other:
+
+```
+                    ┌──────────────────────────────┐
+                    │ EDITOR (visible checkpoint)  │
+Brief ──→ Planner ──→ [Editor] ──→ Structure Interpreter ──→ ...
+              │          ↑               ↑
+              │     Panel: "Steel,   Panel: "Add
+              │      not timber"      seismic bracing"
+              │                    (Correction pin — quick nudge)
+              │
+              └──→ Envelope Interpreter ──→ ...
+```
+
+- The **Editor** steers the reasoning at the trunk — before it fans out. Every downstream branch inherits the corrected intent.
+- The **Correction pin** steers individual branches — the Structure Interpreter gets an additional nudge about seismic bracing that the Envelope Interpreter doesn't need.
+
+### Why This Matters
+
+This is what separates Chirp from autonomous AI pipelines. The designer isn't just a prompt writer who fires and waits. They're an active participant who can intervene at any depth of the reasoning chain, with corrections that are:
+
+- **Visible** — Editor nodes mark where human judgment happened
+- **Contextual** — corrections flow through the same reasoning channel as LLM output
+- **Propagating** — a correction at the trunk affects every downstream branch
+- **Optional** — empty Correction pin = no change, remove the Editor = direct wire
+
+The reasoning chain is collaborative, not autonomous. The human and the LLMs trade control at every junction the designer chooses to monitor.
