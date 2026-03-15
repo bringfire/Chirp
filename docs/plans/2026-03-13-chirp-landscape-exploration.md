@@ -1111,3 +1111,128 @@ Traditional Grasshopper has one data layer: geometry and numbers. Chirp adds a s
 The graph becomes a **thinking graph**, not just a computing graph. It doesn't just calculate what the design IS — it carries the reasoning about WHY the design is what it is, and that reasoning propagates, branches, and compounds as it flows through the canvas.
 
 This is the thing Chirp provides that Rook cannot: Rook sees the graph from outside and manipulates it. Chirp puts intelligence *inside* the graph nodes, making reasoning a first-class wireable signal that the designer can route, branch, merge, and inspect — just like any other data type in Grasshopper.
+
+---
+
+## Component Categories
+
+*Added 2026-03-14 — toward a shared vocabulary for Chirp components*
+
+### The Problem With Freeform Creation
+
+`chirp_create` is currently fully freeform — any pins, any signature, any purpose. That's flexible but it means Claude reinvents the wheel every time, and there's no consistency between sessions or users. If we define **component categories**, we get a shared vocabulary: the user says "add a critic" and Claude knows exactly what pin pattern, signature shape, and wiring behavior that implies.
+
+Categories are to Chirp what component palettes are to Grasshopper — not constraints, but conventions that make composition predictable.
+
+### The Six Categories
+
+#### 1. Planner
+
+The entry point. Translates a design brief into structured parameters.
+
+| | |
+|---|---|
+| **Inputs** | `Brief` (string), optional context inputs (site area, program, constraints) |
+| **Outputs** | Typed parameters (numbers, strings, enums) + `Reasoning` |
+| **Role** | First node in a cascade. Converts intent to values. |
+| **Example** | "timber pergola, garden setting" → `Span=3.6`, `Height=3.0`, `BayCount=3`, `Material="glulam"` |
+
+#### 2. Interpreter
+
+Reads upstream Reasoning through a discipline-specific lens.
+
+| | |
+|---|---|
+| **Inputs** | `Reasoning` (string) + domain context inputs |
+| **Outputs** | Domain-specific parameters + `Reasoning` |
+| **Role** | Fan-out target. Each Interpreter reads the same Reasoning but produces discipline-appropriate outputs. |
+| **Examples** | Structure Interpreter, Envelope Interpreter, MEP Interpreter, Landscape Interpreter |
+
+#### 3. Critic
+
+Cross-checks multiple reasoning streams for contradictions.
+
+| | |
+|---|---|
+| **Inputs** | 2+ `Reasoning` inputs (from Planners/Interpreters) |
+| **Outputs** | `Conflicts` (string), `Score` (float), `Coherent` (bool) + `Reasoning` |
+| **Role** | Terminal or mid-graph validator. Catches when disciplines diverge. |
+| **Example** | "Structure assumes lightweight cladding but Envelope specified heavy stone panels" |
+
+#### 4. Narrator
+
+Produces human-readable design statements from reasoning streams.
+
+| | |
+|---|---|
+| **Inputs** | 2+ `Reasoning` inputs |
+| **Outputs** | `Narrative` (string), `Summary` (string) + `Reasoning` |
+| **Role** | Terminal node. Generates presentation-ready text — competition briefs, client reports. |
+| **Example** | Reads Planner + Structure + Envelope reasoning → coherent design statement |
+
+#### 5. Classifier
+
+Makes categorical decisions from data.
+
+| | |
+|---|---|
+| **Inputs** | Geometry/data + optional `Intent` (string) |
+| **Outputs** | `Category` (string), `Confidence` (float) + `Reasoning` |
+| **Role** | Standalone. Routes data based on LLM judgment, not geometric computation. |
+| **Example** | Surface → "flat / single-curve / double-curve / freeform" with confidence score |
+
+#### 6. Gate
+
+Translates design intent into algorithmic rule activations.
+
+| | |
+|---|---|
+| **Inputs** | `Reasoning` (string) |
+| **Outputs** | Boolean/enum flags + `Reasoning` |
+| **Role** | Bridges reasoning to deterministic rule engines (e.g., Wasp constraint toggles). |
+| **Example** | "load-bearing wall" → `AllowCornerOpenings=false`, `RequireLintel=true` |
+
+### How Categories Change the Workflow
+
+**Without categories** (current):
+```
+User: "Build me something that takes a brief and figures out structure"
+Claude: (improvises pins, signature, wiring from scratch every time)
+```
+
+**With categories:**
+```
+User: "Add a structural interpreter"
+Claude: knows the pattern — Reasoning input + domain context,
+        domain-specific parameter outputs, signature template.
+        Creates it in one chirp_create call with consistent naming.
+
+User: "Add a critic watching structure and envelope"
+Claude: knows the pattern — 2 Reasoning inputs, conflict/score/coherent
+        outputs. Wires both upstream Reasoning pins automatically.
+```
+
+Categories become the vocabulary layer between the user and Claude. No skill needed for each specific cascade — Claude knows the building blocks and composes them on request.
+
+### Implementation Path
+
+Two layers, both lightweight:
+
+**1. `chirp_create` gets a `category` parameter** — selects a pin template and signature pattern. `chirp_create(category="interpreter", domain="structural", ...)` gives you the right pins and signature shape in one call. The freeform mode remains available for one-offs.
+
+**2. The Chirp adapter gets category-aware prompting** — each category can have a tuned system prompt or DSPy module that shapes LLM behavior for that role. A Critic gets a prompt that emphasizes contradiction detection. A Narrator gets one that emphasizes prose quality. The LLM isn't just receiving different inputs — it's operating in a different mode.
+
+### Composition Patterns
+
+Categories imply natural wiring patterns:
+
+```
+Planner ──→ Interpreter (1:N fan-out, the core cascade)
+Interpreter ──→ Critic (N:1 fan-in, cross-discipline check)
+Planner ──→ Gate (1:1, intent to rule state)
+Interpreter ──→ Narrator (N:1, design statement generation)
+Classifier ──→ Planner (1:1, classify first, then plan from category)
+Critic ──→ Planner (1:1 feedback loop — critic flags issues, planner revises)
+```
+
+These aren't enforced — any output can wire to any input. But knowing the natural patterns lets Claude suggest wiring and lets the user think in terms of design process rather than pin names.
