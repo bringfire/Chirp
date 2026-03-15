@@ -105,19 +105,33 @@ class ChirpAdapter:
 
         start = time.perf_counter()
 
-        # Handle correction — prepend to signature instructions if present
+        # Handle correction — inject as an additional input field
         correction = inputs.pop("correction", None)
-        effective_sig = signature
-        if correction and str(correction).strip():
-            effective_sig = f"{signature}\n\nHUMAN CORRECTION (takes priority): {correction}"
+        correction_text = str(correction).strip() if correction else ""
 
-        # Build typed signature with output types from schema
-        # Prepend category prompt if available
+        # Build category context — injected as system_context input
         cat = (category or "").lower().strip()
         prompt_prefix = _CATEGORY_PROMPTS.get(cat, "")
-        if prompt_prefix:
-            effective_sig = f"{prompt_prefix}\n\n{effective_sig}"
 
+        # Compose system context from category prompt + correction
+        context_parts = []
+        if prompt_prefix:
+            context_parts.append(prompt_prefix)
+        if correction_text:
+            context_parts.append(f"HUMAN CORRECTION (takes priority): {correction_text}")
+
+        # If we have context, add it as an input field and extend the signature
+        effective_sig = signature
+        if context_parts:
+            system_context = "\n\n".join(context_parts)
+            inputs["system_context"] = system_context
+            # Extend signature: add system_context as an input field
+            parts = effective_sig.split("->")
+            input_part = parts[0].strip()
+            output_part = parts[1].strip() if len(parts) > 1 else ""
+            effective_sig = f"system_context, {input_part} -> {output_part}"
+
+        # Build typed signature with output types from schema
         typed_sig = self._build_signature(effective_sig, schema)
 
         # Select DSPy module based on category
