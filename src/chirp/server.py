@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+import atexit
+import json
+import os
+import tempfile
+from contextlib import asynccontextmanager
+from datetime import datetime
+from pathlib import Path
+
 from pydantic import BaseModel, Field
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -13,7 +21,40 @@ from chirp.adapter import ChirpAdapter
 from chirp.rook_tool import chirp_create
 from chirp.tracing import TraceLogger
 
-app = FastAPI(title="Chirp", version="0.1.0")
+# --- Discovery file (written only after server is ready) ---
+_DISCOVERY_FOLDER = Path(tempfile.gettempdir()) / "rook"
+_CHIRP_PORT = int(os.environ.get("CHIRP_PORT", "9900"))
+_DISCOVERY_FILE = _DISCOVERY_FOLDER / f"chirp-service-{_CHIRP_PORT}.json"
+
+
+def _write_discovery():
+    _DISCOVERY_FOLDER.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "service": "chirp",
+        "port": _CHIRP_PORT,
+        "pid": os.getpid(),
+        "home": str(Path(__file__).resolve().parent.parent.parent),
+        "startTime": datetime.now().isoformat(timespec="seconds"),
+    }
+    _DISCOVERY_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _cleanup_discovery():
+    try:
+        _DISCOVERY_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    _write_discovery()
+    atexit.register(_cleanup_discovery)
+    yield
+    _cleanup_discovery()
+
+
+app = FastAPI(title="Chirp", version="0.1.0", lifespan=_lifespan)
 adapter = ChirpAdapter()
 tracer = TraceLogger()
 
