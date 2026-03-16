@@ -1114,6 +1114,67 @@ This is the thing Chirp provides that Rook cannot: Rook sees the graph from outs
 
 ---
 
+## What's Inside a Chirp Component (And What Isn't)
+
+*Added 2026-03-15 — central architectural principle*
+
+A Chirp component is **domain-agnostic by design.** The component knows the *shape* of an answer, never the *domain* of the question. This is the most important thing to understand about the architecture, and the thing that makes it powerful.
+
+### The Three Layers
+
+When a Chirp component solves, three distinct layers contribute to the result. Only one is visible to the user. None of them contain the design problem.
+
+**Layer 1: Embedded in the C# script (invisible on canvas)**
+
+These are baked into the component at creation time and never change:
+
+| What | Example | Purpose |
+|------|---------|---------|
+| DSPy signature | `brief -> span_m, bay_count, material` | Defines the typed contract — what goes in, what comes out |
+| Category string | `"planner"` | Selects the reasoning strategy (ChainOfThought vs Predict) |
+| Output schema | `{"span_m": "float", "bay_count": "int", "material": "string"}` | Type coercion for LLM outputs |
+| Adapter URL | `localhost:9900/chirp/call` | Where to send the request |
+
+Note what's absent: no mention of pergolas, bridges, facades, or any specific design domain. The signature says "given a brief, produce a span, a bay count, and a material." It doesn't say what *kind* of span or *what* material.
+
+**Layer 2: Injected by the adapter at call time (invisible everywhere)**
+
+The Chirp adapter adds context that the component doesn't carry:
+
+| What | Example | Purpose |
+|------|---------|---------|
+| Category prompt | *"You are a design planner. Given a brief, determine appropriate parameters."* | Primes the LLM for the reasoning approach |
+| Correction text | *"HUMAN CORRECTION (takes priority): use steel, not timber"* | Per-node human override, only when non-empty |
+
+These are also domain-agnostic. "Design planner" works for bridges, pergolas, furniture, or urban infrastructure. The prompt doesn't name a domain.
+
+**Layer 3: User input at runtime (visible on canvas)**
+
+This is where the domain lives — and it's entirely in the user's hands:
+
+| What | Example | Purpose |
+|------|---------|---------|
+| Brief text (Panel → pin) | *"timber pergola, garden setting, wisteria coverage"* | The actual design problem — the ONLY place the domain exists |
+| Correction text (Panel → pin) | *"actually use cedar, not pine"* | Human steering of a specific node |
+
+### Why This Matters
+
+**The same component handles any domain.** A planner with `brief -> span_m, bay_count, material` produces reasonable outputs whether the brief says "timber pergola for a courtyard garden" or "steel pedestrian bridge over a canal." The LLM re-derives appropriate values from scratch because it has world knowledge about both. You don't retune the component — you change the text.
+
+**Components are reusable across projects.** A "Structure Planner" made for a pergola study works unchanged for a bridge study. The signature defines the output contract (I need a span, a bay count, and a material), not the input domain (this is about pergolas). This is why a firm could build a library of Chirp components — they're typed contracts, not domain-specific calculators.
+
+**The design problem is always visible.** Because domain context lives in Panels connected to input pins, the user can always see (and change) what's driving the reasoning. Nothing is hidden in a prompt template or buried in code. The entire design intent is on the canvas, in plain text, editable by the human.
+
+**This is the inverse of traditional AI tools.** Most AI-for-design tools embed domain knowledge in the tool (a "pergola designer" that only does pergolas). Chirp embeds *reasoning structure* in the tool and lets the domain flow through as data. The component is a lens, not a calculator — it shapes how the LLM thinks about the problem, not what problem it thinks about.
+
+### The Analogy
+
+A Chirp component is like a meeting template. A "design review" template says: "present the concept, list the concerns, propose next steps." It doesn't say what the concept IS — that comes from whoever fills it in. The template structures the conversation. The participants bring the content.
+
+Similarly, a planner component says: "given a brief, determine span, bay count, and material." It structures the LLM's reasoning. The user brings the design problem.
+
+---
+
 ## Component Categories
 
 *Added 2026-03-14 — toward a shared vocabulary for Chirp components*
@@ -1428,3 +1489,258 @@ The user never needs to say "create an Interpreter." They say "I need to think a
 The categories are invisible scaffolding — they give Claude consistency and predictability without the user learning a taxonomy. The user learns ONE gesture: describe the design problem. The skill determines the category. The tool enforces the template.
 
 Over time, designers naturally pick up the vocabulary from seeing labeled components on canvas ("Planner: Pergola Spacing", "Interpreter: Drainage"). The labels become a shared language through use, not study — like layer colors in Rhino.
+
+---
+
+## Connecting Chirp to External Knowledge: The RAG Bridge
+
+*Added 2026-03-15 — linking reasoning components to project databases*
+
+### The Knowledge Gap
+
+A Chirp component's LLM currently has exactly two sources of knowledge:
+
+1. **World knowledge** — what the LLM already knows about timber, steel, structural spans, building codes, design precedent. Broad but generic.
+2. **Pin data** — whatever text flows in through Brief, Reasoning, Correction. Specific but limited to what the user types or what upstream components produce.
+
+This is powerful for general design reasoning, but it's *generic*. The LLM doesn't know:
+- The firm's past projects — what worked, what failed, what it cost, how long it took
+- The firm's material library, preferred suppliers, and standard details
+- Relevant code requirements for the specific jurisdiction and building type
+- Photos and drawings of precedent work (the firm's own or reference projects)
+- Specification sections, product data sheets, manufacturer constraints
+
+A Structure Planner that says "timber pergola" can reason about timber in general. But it can't say "the last three timber pergolas we built used 240×120 glulam at 3.6m spacing and the client was happy" — because that knowledge lives in project archives, not in the LLM's training data.
+
+### Multimodal RAG: Same Vector Space, All Media Types
+
+Google's Gemini Embeddings 2 (and similar models) embed text, images, video, audio, and documents into the **same vector space**. A single model understands cross-modal relationships natively:
+
+- A text query ("timber pergola detail") retrieves relevant drawings, photos, AND text descriptions
+- An uploaded photo retrieves similar past projects with metadata (cost, timeline, team size)
+- A specification section retrieves related detail drawings and construction photos
+
+For architecture firms, this is transformative. Project knowledge isn't just text — it's drawings, photos, models, specs, cost sheets. A multimodal embedding model treats all of these as queryable knowledge in one index.
+
+The retrieval architecture:
+
+```
+Query (text from Chirp pin, or image, or drawing)
+    ↓
+Embedding Model (Gemini Embeddings 2 — single model, all modalities)
+    ↓
+Vector Database (Pinecone — stores embeddings + metadata per record)
+    ↓
+Similarity Search (find nearest neighbors in vector space)
+    ↓
+Retrieved Context (text descriptions, image references, metadata)
+    ↓
+Passed to LLM alongside the original query
+```
+
+### Where RAG Fits in the Chirp Architecture
+
+Given the principle documented above — *the design problem should always be visible on the canvas* — the RAG layer should be **an explicit component on the canvas**, not hidden inside the adapter. Three options evaluated:
+
+**Option A: RAG inside the adapter** — The Chirp adapter does retrieval before calling the LLM, injecting retrieved context alongside the category prompt. Invisible to the user. *Rejected: violates the visibility principle. The user can't see what knowledge is informing the reasoning.*
+
+**Option B: RAG as a Chirp component (a new category: `retriever`)** — A visible node on the canvas that takes a query, searches the vector DB, and outputs enriched context as text. The user wires it into downstream components. *Preferred: keeps knowledge sourcing visible, editable, disconnectable.*
+
+**Option C: RAG at the server level** — Middleware that enriches every call. *Rejected: too invisible, too automatic, too hard to debug when retrieval quality is poor.*
+
+### Option B: The Retriever Component
+
+A retriever is a new Chirp category — but unlike planners and interpreters, it doesn't reason. It *retrieves*. Its job is to translate a query into relevant context from an external knowledge base.
+
+```
+[Panel: "timber pergola"]  →  [Retriever: "Firm Projects"]  →  [Structure Planner]
+                                    ↓                              ↓
+                              Context (text)                  SpanM, BayCount, Material
+                              Sources (string)                Reasoning
+```
+
+The retriever queries the vector DB with the brief text, retrieves the top-k matching records (past projects, details, specs), formats them as structured context text, and passes that as an input pin to downstream components. The planner now reasons with *firm-specific knowledge*, not just generic LLM world knowledge.
+
+What the planner's LLM sees (conceptually):
+
+```
+Brief: "timber pergola, garden setting, wisteria coverage"
+
+Context from firm knowledge base:
+- Project #2019-047 (Hillside Residence Pergola): 240×120 glulam, 3.6m bays,
+  cedar battens at 200mm, total cost $45k, client rated 9/10
+- Project #2021-112 (Courtyard Canopy): 190×90 LVL, 2.8m bays, needed
+  reinforcement after 2 years due to vine load — lesson: oversize for
+  climbing plants
+- Detail Standard DS-T-04: Stainless steel connectors required for all
+  exterior timber, minimum 316 grade in coastal zones
+
+→ Determine: span_m, bay_count, material
+```
+
+The planner can now say "use 240×120 glulam at 3.6m spacing — this matches our successful Hillside project and accounts for vine loading (lesson from Courtyard Canopy: oversize for climbing plants)." That's reasoning grounded in the firm's actual experience, not just LLM world knowledge.
+
+### What Gets Embedded (For an Architecture Firm)
+
+| Source | Modality | What It Provides |
+|--------|----------|-----------------|
+| Project sheets / post-mortems | Text | Costs, timelines, lessons learned, client feedback |
+| Detail drawings (DWG/PDF) | Image | Standard assemblies, connection types, material configurations |
+| Construction photos | Image | As-built conditions, installation sequences, failure modes |
+| Specifications (PDF sections) | Text + diagrams | Material properties, performance requirements, code references |
+| Product data sheets | Text + images | Manufacturer constraints, available sizes, lead times |
+| Site photos | Image | Context, climate, existing conditions |
+| Rhino/GH screenshots | Image | Design precedent from past parametric studies |
+
+The multimodal embedding places all of these in the same vector space. A text query retrieves across all modalities. A photo query finds similar photos AND related text specs.
+
+### Metadata Is the Multiplier
+
+The embedding captures *semantic meaning*, but metadata makes retrieval actionable. Each record in the vector DB should carry structured metadata:
+
+- **Project ID, name, year** — for traceability
+- **Building type** — residential, commercial, institutional, infrastructure
+- **Material system** — timber, steel, concrete, hybrid
+- **Climate zone** — drives material selection and detailing
+- **Cost per unit** — enables instant cost estimation from precedent
+- **Lessons learned tag** — flags records that contain failure/correction knowledge
+- **Confidence/quality score** — how reliable is this precedent
+
+When the retriever queries, it can filter by metadata before similarity search: "show me timber projects in coastal climates" narrows the search space before the embedding model finds semantic matches.
+
+### The Ingestion Question
+
+Who populates and maintains the vector database is a separate workflow from Chirp:
+
+- **Initial bulk ingestion**: A script/tool processes a firm's project archive — PDFs, photos, specs — into embeddings with metadata. This is a one-time setup effort.
+- **Ongoing maintenance**: New projects get ingested as they complete. Post-mortems and lessons learned get added to existing project records (upsert, not insert).
+- **Quality depends on descriptions**: The embedding model needs good text descriptions alongside media. "Photo of roof" retrieves worse than "Standing seam zinc roof, 25-degree pitch, parapet detail at north edge, showing expansion joint at 12m intervals." Subject matter expertise in crafting descriptions matters more than technical configuration.
+
+This is NOT a Chirp responsibility — it's a firm-level knowledge management workflow. Chirp consumes the database through the retriever component. The database exists independently.
+
+### The Technical Mechanism: How the Pieces Connect
+
+Three services participate in a RAG query. Each does exactly one thing:
+
+| Service | Role | What It Does | What It Doesn't Do |
+|---------|------|-------------|-------------------|
+| **Embedding model** (Gemini Embeddings 2) | Translator | Converts content (text, image, PDF) into a numerical vector — a point in semantic space | Doesn't store, doesn't search, doesn't reason |
+| **Vector database** (Pinecone) | Warehouse + search | Stores vectors with metadata; finds nearest neighbors on query | Doesn't create vectors, doesn't understand content |
+| **LLM** (Claude, etc.) | Reasoner | Generates a response using retrieved text as context | Never touches vectors; only sees the retrieved text descriptions |
+
+**At ingestion time** (populating the database — a one-time or periodic workflow):
+
+```
+Source data (PDF page, photo, spec section, drawing)
+    ↓
+Embedding model: converts content → vector [0.23, -0.87, 0.41, ...]
+    ↓
+Vector database: stores vector + metadata + human-written text description
+    (upsert to avoid duplicates on re-ingestion)
+```
+
+**At query time** (when a retriever component solves in GH):
+
+```
+Query text from GH pin: "timber pergola, garden setting"
+    ↓
+Embedding model: converts query → vector in same space as stored content
+    ↓
+Vector database: "which stored vectors are nearest?" → returns top-k matches
+    ↓
+Retrieved records: text descriptions + metadata + similarity scores
+    ↓
+Returned to GH as structured context text (via retriever output pin)
+    ↓
+Downstream Chirp planner/interpreter uses retrieved context alongside Brief
+```
+
+The critical insight: **the embedding model and the reasoning LLM are separate services with separate roles.** The embedding model creates the map; the vector DB navigates it; the LLM reads what was found. The retriever component orchestrates steps 1-4. The downstream Chirp component handles step 5.
+
+### Decided: Mechanism A — Retrieval Through the Chirp Server
+
+*Decision: 2026-03-15*
+
+The retriever component's C# script calls a new `/chirp/retrieve` endpoint on the existing Chirp FastAPI server. The Chirp server handles embedding and vector DB calls in Python, where the SDKs are strongest. The C# script stays thin — same HTTP + JSON pattern as every other Chirp component.
+
+```
+GH Canvas (solve time)
+    ↓
+Retriever component (C# script)
+    → HTTP POST localhost:9900/chirp/retrieve
+      { "query": "timber pergola, garden setting",
+        "top_k": 5,
+        "filters": { "material_system": "timber" } }
+    ↓
+Chirp Server (Python — new /chirp/retrieve endpoint)
+    ├── Embed query via Gemini Embeddings 2 API
+    ├── Search Pinecone/Chroma for top-k matches (with metadata filters)
+    ├── Format results as structured context text
+    └── Return { "context": "...", "sources": [...], "scores": [...] }
+    ↓
+Retriever output pins
+    ├── Context (string) — formatted text of retrieved records
+    ├── Sources (string) — source attribution (project IDs, page numbers, file paths)
+    └── Scores (string) — similarity scores for transparency
+    ↓
+Wired to downstream Planner/Interpreter input pins
+```
+
+**Why this mechanism:**
+
+- **Consistent pattern.** Every Chirp component is a thin C# HTTP client calling the Chirp server. The retriever follows the same pattern — the only difference is the endpoint (`/retrieve` vs `/call`).
+- **Python SDK advantage.** Pinecone, Chroma, Google AI, and OpenAI all have mature Python SDKs. The C# equivalents are less maintained or nonexistent. Keeping external API calls in Python avoids fragile C# HTTP wrappers.
+- **Single gateway.** The Chirp server becomes the single point of contact for all external intelligence — LLM calls AND knowledge retrieval. One process to configure, one `.env` file with API keys, one place to add logging/caching/rate limiting.
+- **API key isolation.** Embedding API keys and vector DB credentials stay in the Python server's `.env`, never exposed to the GH component or the C# runtime.
+
+### Retriever as a Chirp Category
+
+The retriever becomes the 8th Chirp category. Unlike the other 7, it doesn't call an LLM — it calls an embedding model + vector DB. But it follows the same lifecycle: `chirp_create` with `category: "retriever"`, auto-added pins, NickName on canvas, wirable into cascades.
+
+| Category | Purpose | Backend | Module |
+|----------|---------|---------|--------|
+| planner | Brief → structured parameters | LLM (ChainOfThought) | DSPy |
+| interpreter | Reasoning → domain parameters | LLM (ChainOfThought) | DSPy |
+| critic | Multiple Reasonings → conflicts | LLM (ChainOfThought) | DSPy |
+| narrator | Multiple Reasonings → narrative | LLM (ChainOfThought) | DSPy |
+| classifier | Data → categorical decision | LLM (Predict) | DSPy |
+| gate | Reasoning → rule activations | LLM (Predict) | DSPy |
+| editor | Reasoning + Correction → reconciled | LLM (ChainOfThought) | DSPy |
+| **retriever** | **Query → relevant context from knowledge base** | **Embedding + Vector DB** | **Similarity search** |
+
+The retriever's auto-added pins would differ from the LLM categories:
+- **No Reasoning output** — a retriever doesn't reason, it retrieves
+- **No Correction input** — there's nothing to correct (but metadata filters serve a similar steering role)
+- **Sources output** — attribution is mandatory for trust (which project, which page, what confidence)
+
+### The Ingestion Pipeline (Separate From Chirp)
+
+Populating and maintaining the vector database is NOT a Chirp responsibility. It's a firm-level knowledge management workflow that runs independently:
+
+```
+Project Archive (PDFs, photos, specs, drawings, post-mortems)
+    ↓
+Ingestion Script (Python — batch process)
+    ├── For each document/image:
+    │   ├── Generate embedding via Gemini Embeddings 2
+    │   ├── Attach metadata (project ID, year, building type, material, cost, lessons)
+    │   ├── Attach human-written description (quality here = retrieval quality later)
+    │   └── Upsert to Pinecone (avoids duplicates on re-ingestion)
+    └── Output: populated vector index, ready to query
+```
+
+**Quality depends on descriptions.** The embedding captures semantic meaning, but what the downstream LLM ultimately sees is the text description stored alongside the vector. "Photo of roof" retrieves far worse than "Standing seam zinc roof, 25-degree pitch, parapet detail at north edge, showing expansion joint at 12m intervals." Subject matter expertise in writing descriptions is more valuable than any technical configuration.
+
+This could be a Rook tool (`knowledge_ingest`) or a standalone CLI script. The important thing is that it runs separately from the design workflow — you populate the database once (or periodically), and Chirp retriever components query it live during design.
+
+### Open Questions
+
+1. **How does the retriever handle images in its output?** GH pins are typed — a string pin can carry a text description of a retrieved image, but not the image itself. Options: (a) text summaries only, (b) file paths for downstream visualization, (c) both. For a first prototype, text descriptions are sufficient — the LLM reasons from text, not from pixels.
+
+2. **Vector DB choice**: Pinecone (managed, free tier for prototyping) vs. Chroma (local, open source, no data leaves the firm). For architecture firms with sensitive project data, local Chroma may be preferred. For production scale, managed services handle indexing and availability.
+
+3. **Embedding model choice**: Gemini Embeddings 2 is multimodal-native (one model for text + images + documents). Alternatives: OpenAI text-embedding-3 (text only, high quality), Voyage AI (text, strong on technical content), CLIP (images). The tradeoff is simplicity (one model, one vector space) vs. per-modality quality (specialized models, but multiple indices to manage).
+
+4. **How many records is "enough"?** A small firm might have 50-200 projects. A large firm might have thousands. Retrieval quality depends on index density — too few records and the top-k results may be irrelevant. Need to test with real firm data to understand the minimum viable index size.
+
+5. **Should retrieval results be cached?** If the same brief text hits the retriever repeatedly (e.g., during iterative design with sliders changing downstream), caching avoids redundant embedding + search calls. The Chirp adapter already caches LLM calls by input hash — the same pattern could apply to retrieval.
