@@ -23,20 +23,75 @@ from chirp.tracing import TraceLogger
 
 # --- Discovery file (written only after server is ready) ---
 _DISCOVERY_FOLDER = Path(tempfile.gettempdir()) / "rook"
-_CHIRP_PORT = int(os.environ.get("CHIRP_PORT", "9900"))
+_CHIRP_PORT = int(
+    os.environ.get("_CHIRP_BOUND_PORT", os.environ.get("CHIRP_PORT", "9900"))
+)
 _DISCOVERY_FILE = _DISCOVERY_FOLDER / f"chirp-service-{_CHIRP_PORT}.json"
+
+
+def _is_pid_alive(pid: int) -> bool:
+    """Check whether a process with the given PID is still running."""
+    if os.name == "nt":
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+        )
+        if handle:
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return True
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
 
 
 def _write_discovery():
     _DISCOVERY_FOLDER.mkdir(parents=True, exist_ok=True)
+    # Remove stale discovery files from dead processes (port 0 creates new
+    # filenames each time; without cleanup the glob finds multiple entries).
+    for stale in _DISCOVERY_FOLDER.glob("chirp-service-*.json"):
+        try:
+            data = json.loads(stale.read_text(encoding="utf-8"))
+            pid = data.get("pid")
+            if pid is not None and _is_pid_alive(pid):
+                continue  # Another live Chirp instance — leave its file
+        except (OSError, json.JSONDecodeError):
+            pass
+        try:
+            stale.unlink()
+        except OSError:
+            pass
     payload = {
         "service": "chirp",
+        "host": "127.0.0.1",
         "port": _CHIRP_PORT,
         "pid": os.getpid(),
         "home": str(Path(__file__).resolve().parent.parent.parent),
+        "version": "0.1.0",
         "startTime": datetime.now().isoformat(timespec="seconds"),
     }
-    _DISCOVERY_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    # Atomic write: mkstemp + fsync + os.replace() (matches Rook chat server pattern).
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f"{_DISCOVERY_FILE.name}.",
+        suffix=".tmp",
+        dir=_DISCOVERY_FOLDER,
+        text=True,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
+            tmp_file.write(json.dumps(payload, indent=2))
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
+        os.replace(tmp_name, _DISCOVERY_FILE)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
 def _cleanup_discovery():

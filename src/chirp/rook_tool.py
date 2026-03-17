@@ -163,7 +163,9 @@ def chirp_create(
     category_info = CATEGORIES[category]
 
     if port is None:
-        port = int(os.environ.get("CHIRP_PORT", "9900"))
+        port = int(os.environ.get(
+            "_CHIRP_BOUND_PORT", os.environ.get("CHIRP_PORT", "9900")
+        ))
 
     in_pins = [parse_pin(p) for p in pins_in]
     out_pins = [parse_pin(p) for p in pins_out]
