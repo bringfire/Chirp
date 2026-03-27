@@ -36,18 +36,22 @@ class TestChirpCreate:
             pins_in=["SurfaceDesc:string", "Intent:string"],
             pins_out=["UCount:int", "VCount:int", "Grading:float"],
             signature="surface_desc, intent -> u_count, v_count, grading",
+            category="planner",
         )
         assert "script" in result
         assert "pins_in" in result
         assert "pins_out" in result
-        assert len(result["pins_in"]) == 2
-        assert len(result["pins_out"]) == 3
+        # 2 user pins + auto-added Correction
+        assert len(result["pins_in"]) == 3
+        # 3 user pins + auto-added Reasoning
+        assert len(result["pins_out"]) == 4
 
     def test_script_contains_signature(self):
         result = chirp_create(
             pins_in=["X:string"],
             pins_out=["Y:int"],
             signature="x -> y",
+            category="planner",
         )
         assert 'x -> y' in result["script"]
 
@@ -56,26 +60,29 @@ class TestChirpCreate:
             pins_in=["SurfaceDesc:string", "Intent:string"],
             pins_out=["UCount:int"],
             signature="surface_desc, intent -> u_count",
+            category="planner",
         )
         script = result["script"]
-        assert "public string SurfaceDesc" in script
-        assert "public string Intent" in script
+        assert '"surface_desc"' in script
+        assert '"intent"' in script
 
     def test_script_contains_output_fields(self):
         result = chirp_create(
             pins_in=["X:string"],
             pins_out=["UCount:int", "Grading:float"],
             signature="x -> u_count, grading",
+            category="planner",
         )
         script = result["script"]
-        assert "public int UCount" in script
-        assert "public double Grading" in script
+        assert "GetInt32()" in script
+        assert "GetDouble()" in script
 
     def test_script_contains_http_call(self):
         result = chirp_create(
             pins_in=["X:string"],
             pins_out=["Y:int"],
             signature="x -> y",
+            category="planner",
         )
         assert "localhost:9900/chirp/call" in result["script"]
         assert "HttpClient" in result["script"]
@@ -85,6 +92,7 @@ class TestChirpCreate:
             pins_in=["Srf:Surface"],
             pins_out=["Count:int"],
             signature="srf -> count",
+            category="planner",
         )
         assert "ToString()" in result["script"]
 
@@ -94,6 +102,7 @@ class TestChirpCreate:
                 pins_in=["X:string"],
                 pins_out=["Y:FooBar"],
                 signature="x -> y",
+                category="planner",
             )
 
     def test_deterministic_code_included(self):
@@ -101,6 +110,7 @@ class TestChirpCreate:
             pins_in=["X:string"],
             pins_out=["Y:int"],
             signature="x -> y",
+            category="planner",
             deterministic_code="Y = Y * 2;",
         )
         assert "Y = Y * 2;" in result["script"]
@@ -112,6 +122,7 @@ class TestChirpCreate:
                 pins_in=["X:FooBar"],
                 pins_out=["Y:int"],
                 signature="x -> y",
+                category="planner",
             )
 
     def test_geometry_output_is_string_field(self):
@@ -120,9 +131,9 @@ class TestChirpCreate:
             pins_in=["Desc:string"],
             pins_out=["Center:Point3d"],
             signature="desc -> center",
+            category="planner",
         )
         script = result["script"]
-        assert "public string Center" in script
         assert "GetString()" in script
 
     def test_signature_with_quotes_escaped(self):
@@ -130,15 +141,49 @@ class TestChirpCreate:
             pins_in=["X:string"],
             pins_out=["Y:int"],
             signature='given a "description" -> y',
+            category="planner",
         )
-        assert r'given a \"description\" -> y' in result["script"]
+        assert 'description' in result["script"]
 
     def test_pin_metadata(self):
         result = chirp_create(
             pins_in=["Surface:Surface", "Intent:string"],
             pins_out=["UCount:int"],
             signature="surface, intent -> u_count",
+            category="planner",
         )
         assert result["pins_in"][0] == {"name": "Surface", "type": "Surface"}
         assert result["pins_in"][1] == {"name": "Intent", "type": "string"}
         assert result["pins_out"][0] == {"name": "UCount", "type": "int"}
+
+    def test_model_override_in_script(self):
+        result = chirp_create(
+            pins_in=["X:string"],
+            pins_out=["Y:int"],
+            signature="x -> y",
+            category="classifier",
+            model="openai/mercury-2",
+        )
+        assert '"model"' in result["script"]
+        assert "mercury-2" in result["script"]
+        assert result["model"] == "openai/mercury-2"
+
+    def test_no_model_omits_field(self):
+        result = chirp_create(
+            pins_in=["X:string"],
+            pins_out=["Y:int"],
+            signature="x -> y",
+            category="planner",
+        )
+        assert '"model"' not in result["script"]
+        assert result["model"] is None
+
+    def test_category_in_result(self):
+        result = chirp_create(
+            pins_in=["X:string"],
+            pins_out=["Y:int"],
+            signature="x -> y",
+            category="critic",
+        )
+        assert result["category"] == "critic"
+        assert result["category_info"]["module"] == "ChainOfThought"

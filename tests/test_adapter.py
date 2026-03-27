@@ -1,7 +1,10 @@
 """Tests for the ChirpAdapter — type coercion and caching (no live LLM)."""
 
+import json
+import os
 import pytest
-from chirp.adapter import ChirpAdapter
+from unittest.mock import patch
+from chirp.adapter import ChirpAdapter, _load_providers
 
 
 class TestCoercion:
@@ -46,11 +49,103 @@ class TestCacheKey:
         self.adapter = ChirpAdapter()
 
     def test_same_inputs_same_key(self):
-        k1 = self.adapter._cache_key("a -> b", {"a": 1}, {"b": "int"})
-        k2 = self.adapter._cache_key("a -> b", {"a": 1}, {"b": "int"})
+        k1 = self.adapter._cache_key("a -> b", {"a": 1}, {"b": "int"}, "model-a")
+        k2 = self.adapter._cache_key("a -> b", {"a": 1}, {"b": "int"}, "model-a")
         assert k1 == k2
 
     def test_different_inputs_different_key(self):
-        k1 = self.adapter._cache_key("a -> b", {"a": 1}, {"b": "int"})
-        k2 = self.adapter._cache_key("a -> b", {"a": 2}, {"b": "int"})
+        k1 = self.adapter._cache_key("a -> b", {"a": 1}, {"b": "int"}, "model-a")
+        k2 = self.adapter._cache_key("a -> b", {"a": 2}, {"b": "int"}, "model-a")
         assert k1 != k2
+
+    def test_different_model_different_key(self):
+        k1 = self.adapter._cache_key("a -> b", {"a": 1}, {"b": "int"}, "model-a")
+        k2 = self.adapter._cache_key("a -> b", {"a": 1}, {"b": "int"}, "model-b")
+        assert k1 != k2
+
+
+class TestLoadProviders:
+    """Test provider config loading from CHIRP_PROVIDERS env var."""
+
+    def test_empty_env(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CHIRP_PROVIDERS", None)
+            assert _load_providers() == {}
+
+    def test_valid_json(self):
+        cfg = '{"openai/mercury-2": {"api_base": "https://api.inceptionlabs.ai/v1", "api_key_env": "INCEPTION_API_KEY"}}'
+        with patch.dict(os.environ, {"CHIRP_PROVIDERS": cfg}):
+            result = _load_providers()
+            assert "openai/mercury-2" in result
+            assert result["openai/mercury-2"]["api_base"] == "https://api.inceptionlabs.ai/v1"
+            assert result["openai/mercury-2"]["api_key_env"] == "INCEPTION_API_KEY"
+
+    def test_invalid_json_returns_empty(self):
+        with patch.dict(os.environ, {"CHIRP_PROVIDERS": "not json"}):
+            assert _load_providers() == {}
+
+
+class TestGetLm:
+    """Test that _get_lm resolves provider config into dspy.LM kwargs."""
+
+    def setup_method(self):
+        self.adapter = ChirpAdapter()
+
+    def test_default_model_returns_none(self):
+        assert self.adapter._get_lm(None) is None
+        assert self.adapter._get_lm(self.adapter._default_model) is None
+
+    def test_override_model_creates_lm(self):
+        lm = self.adapter._get_lm("anthropic/claude-haiku-4-5-20251001")
+        assert lm is not None
+
+    def test_override_model_is_cached(self):
+        lm1 = self.adapter._get_lm("anthropic/claude-haiku-4-5-20251001")
+        lm2 = self.adapter._get_lm("anthropic/claude-haiku-4-5-20251001")
+        assert lm1 is lm2
+
+    def test_provider_config_passes_api_base(self):
+        """When CHIRP_PROVIDERS maps a model, _get_lm should pass api_base to dspy.LM."""
+        self.adapter._providers = {
+            "openai/mercury-2": {
+                "api_base": "https://api.inceptionlabs.ai/v1",
+                "api_key_env": "INCEPTION_API_KEY",
+            }
+        }
+        with patch.dict(os.environ, {"INCEPTION_API_KEY": "test-key-123"}):
+            with patch("chirp.adapter.dspy.LM") as mock_lm:
+                mock_lm.return_value = "fake_lm"
+                lm = self.adapter._get_lm("openai/mercury-2")
+                mock_lm.assert_called_once_with(
+                    "openai/mercury-2",
+                    api_base="https://api.inceptionlabs.ai/v1",
+                    api_key="test-key-123",
+                )
+                assert lm == "fake_lm"
+
+
+class TestDefaultModelProviderRouting:
+    """Test that the default model also uses CHIRP_PROVIDERS config."""
+
+    def test_default_model_uses_provider_config(self):
+        """CHIRP_MODEL=openai/mercury-2 + CHIRP_PROVIDERS should route correctly."""
+        providers_json = json.dumps({
+            "openai/mercury-2": {
+                "api_base": "https://api.inceptionlabs.ai/v1",
+                "api_key_env": "INCEPTION_API_KEY",
+            }
+        })
+        with patch.dict(os.environ, {
+            "CHIRP_MODEL": "openai/mercury-2",
+            "CHIRP_PROVIDERS": providers_json,
+            "INCEPTION_API_KEY": "test-key-456",
+        }):
+            with patch("chirp.adapter.dspy.LM") as mock_lm:
+                with patch("chirp.adapter.dspy.configure"):
+                    mock_lm.return_value = "fake_lm"
+                    adapter = ChirpAdapter()
+                    mock_lm.assert_called_once_with(
+                        "openai/mercury-2",
+                        api_base="https://api.inceptionlabs.ai/v1",
+                        api_key="test-key-456",
+                    )

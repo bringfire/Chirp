@@ -55,16 +55,69 @@ _CATEGORY_MODULES: dict[str, str] = {
 }
 
 
+def _load_providers() -> dict[str, dict]:
+    """Load provider config from CHIRP_PROVIDERS env var.
+
+    Format: JSON dict mapping model strings to provider config.
+    Each value can have:
+        api_base:    Base URL for the provider (e.g. "https://api.inceptionlabs.ai/v1")
+        api_key_env: Name of the env var holding the API key (e.g. "INCEPTION_API_KEY")
+
+    Example:
+        CHIRP_PROVIDERS='{"openai/mercury-2": {"api_base": "https://api.inceptionlabs.ai/v1", "api_key_env": "INCEPTION_API_KEY"}}'
+    """
+    raw = os.environ.get("CHIRP_PROVIDERS", "")
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
 class ChirpAdapter:
     """Bridge between typed schemas and LLM calls, using DSPy modules."""
 
     def __init__(self) -> None:
-        model = os.environ.get("CHIRP_MODEL", "anthropic/claude-sonnet-4-20250514")
-        self._lm = dspy.LM(model)
+        self._default_model = os.environ.get("CHIRP_MODEL", "anthropic/claude-sonnet-4-20250514")
+
+        # Provider config: maps model strings to api_base + api_key_env.
+        # Loaded from CHIRP_PROVIDERS env var (JSON), e.g.:
+        # {"openai/mercury-2": {"api_base": "https://api.inceptionlabs.ai/v1", "api_key_env": "INCEPTION_API_KEY"}}
+        self._providers = _load_providers()
+
+        # Create default LM with provider config (so CHIRP_MODEL=openai/mercury-2
+        # plus CHIRP_PROVIDERS picks up api_base/api_key on the default path too)
+        self._lm = self._make_lm(self._default_model)
         dspy.configure(lm=self._lm)
+
+        # Cache of LM instances keyed by model string (avoid re-init per call)
+        self._lm_cache: dict[str, dspy.LM] = {self._default_model: self._lm}
 
         self._cache_enabled = os.environ.get("CHIRP_CACHE", "true").lower() == "true"
         self._cache: dict[str, dict] = {}
+
+    def _make_lm(self, model: str) -> dspy.LM:
+        """Create a dspy.LM with provider config resolved from CHIRP_PROVIDERS."""
+        kwargs: dict = {}
+        provider_cfg = self._providers.get(model)
+        if provider_cfg:
+            if "api_base" in provider_cfg:
+                kwargs["api_base"] = provider_cfg["api_base"]
+            api_key_env = provider_cfg.get("api_key_env")
+            if api_key_env:
+                api_key = os.environ.get(api_key_env)
+                if api_key:
+                    kwargs["api_key"] = api_key
+        return dspy.LM(model, **kwargs)
+
+    def _get_lm(self, model: str | None) -> dspy.LM | None:
+        """Return a dspy.LM for the given model string, or None for default."""
+        if not model or model == self._default_model:
+            return None  # use default configured LM
+        if model not in self._lm_cache:
+            self._lm_cache[model] = self._make_lm(model)
+        return self._lm_cache[model]
 
     def call(
         self,
@@ -74,6 +127,7 @@ class ChirpAdapter:
         *,
         category: str | None = None,
         use_cache: bool | None = None,
+        model: str | None = None,
     ) -> dict:
         """Call the LLM with a signature and inputs, return validated typed outputs.
 
@@ -84,6 +138,8 @@ class ChirpAdapter:
             category: Component category (planner, interpreter, etc.) — determines
                       DSPy module and prompt strategy.
             use_cache: Override cache behavior for this call.
+            model: LiteLLM model string to override the default for this call.
+                   E.g. "openai/mercury-2", "anthropic/claude-haiku-4-5-20251001".
 
         Returns:
             dict with keys:
@@ -92,12 +148,14 @@ class ChirpAdapter:
                 usage: token usage dict
                 cached: whether this was a cache hit
                 latency_ms: wall-clock time for the call
+                model: the model used for this call
         """
         should_cache = use_cache if use_cache is not None else self._cache_enabled
+        effective_model = model or self._default_model
 
-        # Check cache
+        # Check cache (model is part of the key — different model = different result)
         if should_cache:
-            cache_key = self._cache_key(signature, inputs, schema)
+            cache_key = self._cache_key(signature, inputs, schema, effective_model)
             if cache_key in self._cache:
                 cached = self._cache[cache_key].copy()
                 cached["cached"] = True
@@ -138,7 +196,15 @@ class ChirpAdapter:
         module_name = _CATEGORY_MODULES.get(cat, "ChainOfThought")
         module_cls = _MODULE_MAP.get(module_name, dspy.ChainOfThought)
         predict = module_cls(typed_sig)
-        prediction = predict(**inputs)
+
+        # Per-call model override via dspy.context
+        override_lm = self._get_lm(model)
+        active_lm = override_lm or self._lm
+        if override_lm is not None:
+            with dspy.context(lm=override_lm):
+                prediction = predict(**inputs)
+        else:
+            prediction = predict(**inputs)
 
         elapsed_ms = (time.perf_counter() - start) * 1000
 
@@ -152,9 +218,10 @@ class ChirpAdapter:
         result = {
             "outputs": outputs,
             "reasoning": getattr(prediction, "reasoning", None),
-            "usage": self._get_usage(),
+            "usage": self._get_usage(active_lm),
             "cached": False,
             "latency_ms": round(elapsed_ms, 1),
+            "model": effective_model,
         }
 
         # Store in cache
@@ -219,18 +286,18 @@ class ChirpAdapter:
                 f"Cannot coerce {value!r} to {type_str}: {e}"
             ) from e
 
-    def _cache_key(self, signature: str, inputs: dict, schema: dict) -> str:
+    def _cache_key(self, signature: str, inputs: dict, schema: dict, model: str) -> str:
         """Deterministic cache key from call parameters."""
         blob = json.dumps(
-            {"signature": signature, "inputs": inputs, "schema": schema},
+            {"signature": signature, "inputs": inputs, "schema": schema, "model": model},
             sort_keys=True,
         )
         return hashlib.sha256(blob.encode()).hexdigest()
 
-    def _get_usage(self) -> dict:
-        """Extract token usage from the last LLM call."""
+    def _get_usage(self, lm: dspy.LM | None = None) -> dict:
+        """Extract token usage from the last LLM call on the given LM instance."""
         try:
-            history = self._lm.history
+            history = (lm or self._lm).history
             if history:
                 last = history[-1]
                 usage = last.get("usage", {})

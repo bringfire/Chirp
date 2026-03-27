@@ -130,6 +130,7 @@ def chirp_create(
     name: str | None = None,
     deterministic_code: str | None = None,
     port: int | None = None,
+    model: str | None = None,
 ) -> dict:
     """Generate a Chirp-enabled C# script component.
 
@@ -144,6 +145,10 @@ def chirp_create(
         deterministic_code: Optional C# code to run after LLM outputs are assigned.
                            Has access to all input/output fields.
         port: Chirp adapter port (default: CHIRP_PORT env var or 9900)
+        model: LiteLLM model string for this component. When set, the generated
+               C# script sends the model in every /chirp/call request, overriding
+               the adapter's default. E.g. "openai/mercury-2",
+               "anthropic/claude-haiku-4-5-20251001".
 
     Returns:
         dict with:
@@ -152,6 +157,7 @@ def chirp_create(
             pins_out: List of {name, type} dicts for output pin configuration
             category: The validated category string
             category_info: Category metadata (module, description, prompt_prefix)
+            model: The model string if set, else None
     """
     # ── Validate category ────────────────────────────────────────────
     category = category.lower().strip()
@@ -204,7 +210,7 @@ def chirp_create(
         schema[_to_snake(pin_name)] = adapter_type
 
     # Generate the script — includes Correction in inputs, Reasoning in outputs
-    script = _generate_script(all_in_pins, out_pins, signature, schema, deterministic_code, port, category)
+    script = _generate_script(all_in_pins, out_pins, signature, schema, deterministic_code, port, category, model)
 
     # Build final pin lists for GH component configuration
     all_out_pins_list = [{"name": n, "type": t} for n, t in out_pins]
@@ -220,6 +226,7 @@ def chirp_create(
         "category": category,
         "category_info": category_info,
         "name": name or f"Chirp {category.title()}",
+        "model": model,
     }
 
 
@@ -241,6 +248,7 @@ def _generate_script(
     deterministic_code: str | None,
     port: int,
     category: str = "planner",
+    model: str | None = None,
 ) -> str:
     """Generate a GH_ScriptInstance C# script for the RhinoCode C# Script component."""
     lines: list[str] = []
@@ -317,7 +325,12 @@ def _generate_script(
     w('                { "inputs", inputs },')
     w('                { "schema", schema },')
     escaped_cat = category.replace('"', '""')
-    w(f'                {{ "category", @"{escaped_cat}" }}')
+    if model:
+        w(f'                {{ "category", @"{escaped_cat}" }},')
+        escaped_model = model.replace('"', '""')
+        w(f'                {{ "model", @"{escaped_model}" }}')
+    else:
+        w(f'                {{ "category", @"{escaped_cat}" }}')
     w("            };")
     w()
 

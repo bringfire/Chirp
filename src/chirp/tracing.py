@@ -29,6 +29,7 @@ class TraceLogger:
         latency_ms: float,
         usage: dict,
         cache_hit: bool,
+        model: str | None = None,
     ) -> None:
         entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -40,6 +41,7 @@ class TraceLogger:
             "latency_ms": round(latency_ms, 1),
             "usage": usage,
             "cache_hit": cache_hit,
+            "model": model,
         }
         with open(self._file, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, default=str) + "\n")

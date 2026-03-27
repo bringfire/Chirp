@@ -122,6 +122,7 @@ class CallRequest(BaseModel):
     schema_: dict[str, str] = Field(alias="schema")
     category: str | None = None
     cache: bool | None = None
+    model: str | None = None
 
 
 class CallResponse(BaseModel):
@@ -130,6 +131,7 @@ class CallResponse(BaseModel):
     usage: dict
     cached: bool
     latency_ms: float
+    model: str | None = None
 
 
 class ErrorResponse(BaseModel):
@@ -139,6 +141,7 @@ class ErrorResponse(BaseModel):
 
 @app.post("/chirp/call", response_model=CallResponse)
 def chirp_call(req: CallRequest):
+    effective_model = req.model or adapter._default_model
     try:
         result = adapter.call(
             signature=req.signature,
@@ -146,6 +149,7 @@ def chirp_call(req: CallRequest):
             schema=req.schema_,
             category=req.category,
             use_cache=req.cache,
+            model=req.model,
         )
         tracer.log(
             signature=req.signature,
@@ -156,6 +160,7 @@ def chirp_call(req: CallRequest):
             latency_ms=result["latency_ms"],
             usage=result["usage"],
             cache_hit=result["cached"],
+            model=result.get("model"),
         )
         return CallResponse(**result)
     except Exception as e:
@@ -168,6 +173,7 @@ def chirp_call(req: CallRequest):
             latency_ms=0,
             usage={"input_tokens": 0, "output_tokens": 0},
             cache_hit=False,
+            model=effective_model,
         )
         return JSONResponse(
             status_code=500,
@@ -183,6 +189,7 @@ class CreateRequest(BaseModel):
     name: str | None = None
     deterministic_code: str | None = None
     port: int | None = None
+    model: str | None = None
 
 
 @app.post("/chirp/create")
@@ -196,6 +203,7 @@ def chirp_create_endpoint(req: CreateRequest):
             name=req.name,
             deterministic_code=req.deterministic_code,
             port=req.port,
+            model=req.model,
         )
         return result
     except ValueError as e:
