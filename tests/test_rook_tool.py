@@ -116,6 +116,31 @@ class TestChirpCreate:
         assert "Y = Y * 2;" in result["script"]
         assert "Deterministic" in result["script"]
 
+    def test_deterministic_only_omits_llm_http_call(self):
+        result = chirp_create(
+            pins_in=["X:string"],
+            pins_out=["Y:string"],
+            signature="x -> y",
+            category="planner",
+            deterministic_code='Y = X?.ToString() ?? "";',
+            deterministic_only=True,
+        )
+
+        assert result["deterministic_only"] is True
+        assert "/chirp/call" not in result["script"]
+        assert 'Y = X?.ToString() ?? "";' in result["script"]
+        assert 'Reasoning = (object)"deterministic";' in result["script"]
+
+    def test_deterministic_only_requires_code(self):
+        with pytest.raises(ValueError, match="deterministic_only requires deterministic_code"):
+            chirp_create(
+                pins_in=["X:string"],
+                pins_out=["Y:string"],
+                signature="x -> y",
+                category="planner",
+                deterministic_only=True,
+            )
+
     def test_unknown_input_type_raises(self):
         with pytest.raises(ValueError, match="Unknown input type"):
             chirp_create(

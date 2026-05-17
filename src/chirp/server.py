@@ -188,6 +188,7 @@ class CreateRequest(BaseModel):
     category: str
     name: str | None = None
     deterministic_code: str | None = None
+    deterministic_only: bool = False
     port: int | None = None
     model: str | None = None
 
@@ -202,6 +203,7 @@ def chirp_create_endpoint(req: CreateRequest):
             category=req.category,
             name=req.name,
             deterministic_code=req.deterministic_code,
+            deterministic_only=req.deterministic_only,
             port=req.port,
             model=req.model,
         )

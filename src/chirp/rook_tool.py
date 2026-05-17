@@ -129,6 +129,7 @@ def chirp_create(
     category: str,
     name: str | None = None,
     deterministic_code: str | None = None,
+    deterministic_only: bool = False,
     port: int | None = None,
     model: str | None = None,
 ) -> dict:
@@ -144,6 +145,8 @@ def chirp_create(
         name: Optional display name / NickName for the component.
         deterministic_code: Optional C# code to run after LLM outputs are assigned.
                            Has access to all input/output fields.
+        deterministic_only: Generate a component that runs deterministic_code
+                           without calling the Chirp LLM endpoint.
         port: Chirp adapter port (default: CHIRP_PORT env var or 9900)
         model: LiteLLM model string for this component. When set, the generated
                C# script sends the model in every /chirp/call request, overriding
@@ -167,6 +170,8 @@ def chirp_create(
             f"Must be one of: {', '.join(sorted(VALID_CATEGORIES))}"
         )
     category_info = CATEGORIES[category]
+    if deterministic_only and not deterministic_code:
+        raise ValueError("deterministic_only requires deterministic_code")
 
     if port is None:
         port = int(os.environ.get(
@@ -210,7 +215,17 @@ def chirp_create(
         schema[_to_snake(pin_name)] = adapter_type
 
     # Generate the script — includes Correction in inputs, Reasoning in outputs
-    script = _generate_script(all_in_pins, out_pins, signature, schema, deterministic_code, port, category, model)
+    script = _generate_script(
+        all_in_pins,
+        out_pins,
+        signature,
+        schema,
+        deterministic_code,
+        port,
+        category,
+        model,
+        deterministic_only=deterministic_only,
+    )
 
     # Build final pin lists for GH component configuration
     all_out_pins_list = [{"name": n, "type": t} for n, t in out_pins]
@@ -227,6 +242,7 @@ def chirp_create(
         "category_info": category_info,
         "name": name or f"Chirp {category.title()}",
         "model": model,
+        "deterministic_only": deterministic_only,
     }
 
 
@@ -249,6 +265,7 @@ def _generate_script(
     port: int,
     category: str = "planner",
     model: str | None = None,
+    deterministic_only: bool = False,
 ) -> str:
     """Generate a GH_ScriptInstance C# script for the RhinoCode C# Script component."""
     lines: list[str] = []
@@ -290,6 +307,20 @@ def _generate_script(
     w("    {")
     w("        try")
     w("        {")
+
+    if deterministic_only:
+        w("            // === Deterministic execution ===")
+        w('            Reasoning = (object)"deterministic";')
+        w(f"            {deterministic_code}")
+        w("            return;")
+        w("        }")
+        w("        catch (Exception ex)")
+        w("        {")
+        w('            throw new Exception($"Chirp: {ex.Message}");')
+        w("        }")
+        w("    }")
+        w("}")
+        return "\n".join(lines) + "\n"
 
     # Build inputs dict — cast from object to expected type
     # Correction is included in in_pins but handled specially below
