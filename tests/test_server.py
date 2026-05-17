@@ -169,6 +169,21 @@ def test_chirp_create_with_deterministic_code():
     assert "Y = Y * 2;" in resp.json()["script"]
 
 
+def test_chirp_create_with_deterministic_only():
+    resp = client.post("/chirp/create", json={
+        "pins_in": ["X:string"],
+        "pins_out": ["Y:string"],
+        "signature": "x -> y",
+        "category": "planner",
+        "deterministic_code": 'Y = X?.ToString() ?? "";',
+        "deterministic_only": True,
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["deterministic_only"] is True
+    assert "/chirp/call" not in data["script"]
+
+
 def test_chirp_create_invalid_type_returns_400():
     resp = client.post("/chirp/create", json={
         "pins_in": ["X:string"],
