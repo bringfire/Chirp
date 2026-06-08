@@ -4,7 +4,7 @@ import json
 import os
 import pytest
 from unittest.mock import patch
-from chirp.adapter import ChirpAdapter, _load_providers
+from chirp.adapter import ChirpAdapter, _load_providers, configure_secure_dspy_cache
 
 
 class TestCoercion:
@@ -83,6 +83,41 @@ class TestLoadProviders:
     def test_invalid_json_returns_empty(self):
         with patch.dict(os.environ, {"CHIRP_PROVIDERS": "not json"}):
             assert _load_providers() == {}
+
+
+class TestSecureDspyCache:
+    """Test DSPy cache hardening for the Chirp runtime."""
+
+    def test_configure_secure_cache_uses_restricted_pickle(self, tmp_path):
+        with patch.dict(os.environ, {"CHIRP_HOME": str(tmp_path)}, clear=False):
+            with patch("chirp.adapter.dspy.configure_cache") as configure_cache:
+                result = configure_secure_dspy_cache()
+
+        configure_cache.assert_called_once()
+        kwargs = configure_cache.call_args.kwargs
+        assert kwargs["restrict_pickle"] is True
+        assert kwargs["enable_disk_cache"] is True
+        assert kwargs["disk_cache_dir"].replace("\\", "/").endswith("data/dspy-cache")
+        assert result["restrict_pickle"] is True
+
+    def test_adapter_initialization_configures_secure_cache(self):
+        with patch("chirp.adapter.configure_secure_dspy_cache") as configure_cache:
+            with patch("chirp.adapter.dspy.LM") as mock_lm:
+                with patch("chirp.adapter.dspy.configure"):
+                    mock_lm.return_value = "fake_lm"
+                    ChirpAdapter()
+
+        configure_cache.assert_called_once()
+
+    def test_release_mode_fails_if_dspy_lacks_restricted_pickle(self):
+        def reject_restrict_pickle(**kwargs):
+            if "restrict_pickle" in kwargs:
+                raise TypeError("unexpected keyword argument 'restrict_pickle'")
+
+        with patch.dict(os.environ, {"ROOK_MODE": "release"}, clear=False):
+            with patch("chirp.adapter.dspy.configure_cache", reject_restrict_pickle):
+                with pytest.raises(RuntimeError, match="restrict_pickle"):
+                    configure_secure_dspy_cache()
 
 
 class TestGetLm:
