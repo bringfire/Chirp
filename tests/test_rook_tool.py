@@ -74,8 +74,8 @@ class TestChirpCreate:
             category="planner",
         )
         script = result["script"]
-        assert "GetInt32()" in script
-        assert "GetDouble()" in script
+        assert "ReadInt(" in script
+        assert "ReadDouble(" in script
 
     def test_script_contains_http_call(self):
         result = chirp_create(
@@ -128,8 +128,40 @@ class TestChirpCreate:
 
         assert result["deterministic_only"] is True
         assert "/chirp/call" not in result["script"]
+        assert "HttpClient" not in result["script"]
+        assert "System.Net.Http" not in result["script"]
         assert 'Y = X?.ToString() ?? "";' in result["script"]
         assert 'Reasoning = (object)"deterministic";' in result["script"]
+
+    def test_deterministic_only_avoids_json_assembly_dependency(self):
+        result = chirp_create(
+            pins_in=["X:string"],
+            pins_out=["Y:string"],
+            signature="x -> y",
+            category="planner",
+            deterministic_code='Y = X?.ToString() ?? "";',
+            deterministic_only=True,
+        )
+
+        script = result["script"]
+        assert "System.Text.Json" not in script
+        assert "JsonSerializer" not in script
+        assert "JsonDocument" not in script
+
+    def test_generated_script_avoids_system_text_json_dependency(self):
+        result = chirp_create(
+            pins_in=["X:string"],
+            pins_out=["Y:int", "Reason:string"],
+            signature="x -> y, reason",
+            category="planner",
+        )
+
+        script = result["script"]
+        assert "System.Text.Json" not in script
+        assert "JsonSerializer" not in script
+        assert "JsonDocument" not in script
+        assert "localhost:9900/chirp/call" in script
+        assert "HttpClient" in script
 
     def test_deterministic_only_requires_code(self):
         with pytest.raises(ValueError, match="deterministic_only requires deterministic_code"):
@@ -159,7 +191,7 @@ class TestChirpCreate:
             category="planner",
         )
         script = result["script"]
-        assert "GetString()" in script
+        assert "ReadString(" in script
 
     def test_signature_with_quotes_escaped(self):
         result = chirp_create(
@@ -200,7 +232,7 @@ class TestChirpCreate:
             signature="x -> y",
             category="planner",
         )
-        assert '"model"' not in result["script"]
+        assert 'BuildRequestJson(@"x -> y", @"planner", null, inputs, schema)' in result["script"]
         assert result["model"] is None
 
     def test_category_in_result(self):
