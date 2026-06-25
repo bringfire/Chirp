@@ -4,7 +4,7 @@ import json
 import os
 import pytest
 from unittest.mock import patch
-from chirp.adapter import ChirpAdapter, _load_providers
+from chirp.adapter import ChirpAdapter, _load_providers, configure_secure_dspy_cache
 
 
 class TestCoercion:
@@ -83,6 +83,32 @@ class TestLoadProviders:
     def test_invalid_json_returns_empty(self):
         with patch.dict(os.environ, {"CHIRP_PROVIDERS": "not json"}):
             assert _load_providers() == {}
+
+
+class TestSecureDspyCache:
+    """Test release-safe DSPy cache configuration."""
+
+    def test_uses_chirp_home_cache_dir_and_restricts_pickle(self, tmp_path):
+        chirp_home = tmp_path / "chirp"
+        expected_cache = chirp_home / "data" / "dspy-cache"
+        env = {
+            "CHIRP_HOME": str(chirp_home),
+            "CHIRP_DSPY_RESTRICT_PICKLE": "1",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            os.environ.pop("DSPY_CACHEDIR", None)
+            with patch("chirp.adapter.dspy.configure_cache", create=True) as configure_cache:
+                result = configure_secure_dspy_cache()
+
+        configure_cache.assert_called_once_with(
+            enable_disk_cache=True,
+            enable_memory_cache=True,
+            restrict_pickle=True,
+            disk_cache_dir=str(expected_cache),
+        )
+        assert result["restrict_pickle"] is True
+        assert result["disk_cache_dir"] == str(expected_cache)
+        assert expected_cache.exists()
 
 
 class TestGetLm:

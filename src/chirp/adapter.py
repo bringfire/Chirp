@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import time
+from pathlib import Path
 
 import dspy
 
@@ -54,6 +55,63 @@ _CATEGORY_MODULES: dict[str, str] = {
     "editor": "ChainOfThought",
 }
 
+_cache_configured = False
+
+
+def _get_chirp_dspy_cache_dir() -> str | None:
+    """Resolve Chirp's DSPy cache directory for release/runtime processes."""
+    configured = os.environ.get("DSPY_CACHEDIR")
+    if configured:
+        return configured
+
+    chirp_home = os.environ.get("CHIRP_HOME")
+    if chirp_home:
+        cache_dir = str(Path(chirp_home) / "data" / "dspy-cache")
+        os.environ["DSPY_CACHEDIR"] = cache_dir
+        return cache_dir
+
+    return None
+
+
+def configure_secure_dspy_cache() -> dict:
+    """Force DSPy disk cache reads through restricted pickle deserialization."""
+    global _cache_configured
+    cache_dir = _get_chirp_dspy_cache_dir()
+    require_restricted_pickle = (
+        os.environ.get("CHIRP_DSPY_RESTRICT_PICKLE") == "1"
+        or os.environ.get("ROOK_MODE") == "release"
+    )
+    kwargs = {
+        "enable_disk_cache": True,
+        "enable_memory_cache": True,
+        "restrict_pickle": True,
+    }
+    if cache_dir:
+        Path(cache_dir).mkdir(parents=True, exist_ok=True)
+        kwargs["disk_cache_dir"] = cache_dir
+
+    if not hasattr(dspy, "configure_cache"):
+        raise RuntimeError("Installed DSPy does not support secure cache configuration")
+
+    try:
+        dspy.configure_cache(**kwargs)
+    except TypeError as exc:
+        if require_restricted_pickle:
+            raise RuntimeError(
+                "Installed DSPy does not support restrict_pickle cache configuration"
+            ) from exc
+        fallback_kwargs = dict(kwargs)
+        fallback_kwargs.pop("restrict_pickle", None)
+        dspy.configure_cache(**fallback_kwargs)
+        kwargs["restrict_pickle"] = False
+
+    if kwargs["restrict_pickle"]:
+        os.environ["CHIRP_DSPY_RESTRICT_PICKLE"] = "1"
+    else:
+        os.environ.pop("CHIRP_DSPY_RESTRICT_PICKLE", None)
+    _cache_configured = True
+    return kwargs
+
 
 def _load_providers() -> dict[str, dict]:
     """Load provider config from CHIRP_PROVIDERS env var.
@@ -79,6 +137,8 @@ class ChirpAdapter:
     """Bridge between typed schemas and LLM calls, using DSPy modules."""
 
     def __init__(self) -> None:
+        configure_secure_dspy_cache()
+
         self._default_model = os.environ.get("CHIRP_MODEL", "anthropic/claude-sonnet-4-20250514")
 
         # Provider config: maps model strings to api_base + api_key_env.
