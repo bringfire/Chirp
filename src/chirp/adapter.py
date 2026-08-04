@@ -138,7 +138,7 @@ class ChirpAdapter:
 
     def __init__(self) -> None:
         configure_secure_dspy_cache()
-        self._default_model = os.environ.get("CHIRP_MODEL", "anthropic/claude-sonnet-4-20250514")
+        self._default_model = os.environ.get("CHIRP_MODEL", "anthropic/claude-opus-5")
 
         # Provider config: maps model strings to api_base + api_key_env.
         # Loaded from CHIRP_PROVIDERS env var (JSON), e.g.:

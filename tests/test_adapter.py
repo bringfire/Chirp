@@ -162,6 +162,17 @@ class TestGetLm:
 class TestDefaultModelProviderRouting:
     """Test that the default model also uses CHIRP_PROVIDERS config."""
 
+    def test_no_override_uses_opus_5(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CHIRP_MODEL", None)
+            with patch("chirp.adapter.dspy.LM") as mock_lm:
+                with patch("chirp.adapter.dspy.configure"):
+                    mock_lm.return_value = "fake_lm"
+                    adapter = ChirpAdapter()
+
+        assert adapter._default_model == "anthropic/claude-opus-5"
+        mock_lm.assert_called_once_with("anthropic/claude-opus-5")
+
     def test_default_model_uses_provider_config(self):
         """CHIRP_MODEL=openai/mercury-2 + CHIRP_PROVIDERS should route correctly."""
         providers_json = json.dumps({
