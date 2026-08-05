@@ -86,7 +86,7 @@ The adapter binds to `127.0.0.1:0` by default — the OS assigns a free port. A 
 
 | Env Var | Default | Description |
 |---------|---------|-------------|
-| `CHIRP_MODEL` | `anthropic/claude-sonnet-4-20250514` | LLM model (any LiteLLM-compatible string) |
+| `CHIRP_MODEL` | `anthropic/claude-opus-5` | LLM model (any LiteLLM-compatible string) |
 | `CHIRP_PORT` | `0` (OS-assigned) | Port override — nonzero pins a specific port |
 | `CHIRP_CACHE` | `true` | Enable/disable in-memory result cache |
 | `CHIRP_TRACE_DIR` | `./traces` | Directory for JSONL trace logs |

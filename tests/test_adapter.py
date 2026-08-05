@@ -3,6 +3,8 @@
 import json
 import os
 import pytest
+from contextlib import nullcontext
+from types import SimpleNamespace
 from unittest.mock import patch
 from chirp.adapter import ChirpAdapter, _load_providers, configure_secure_dspy_cache
 
@@ -161,6 +163,56 @@ class TestGetLm:
 
 class TestDefaultModelProviderRouting:
     """Test that the default model also uses CHIRP_PROVIDERS config."""
+
+    @pytest.mark.parametrize(
+        "category",
+        ["interpreter", "critic", "narrator", "classifier", "gate", "editor"],
+    )
+    def test_non_planner_calls_use_sonnet_5(self, category):
+        class FakeProgram:
+            def __init__(self, _signature):
+                pass
+
+            def __call__(self, **_inputs):
+                return SimpleNamespace(answer="ok", reasoning="done")
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CHIRP_MODEL", None)
+            with patch("chirp.adapter.dspy.LM") as mock_lm:
+                with patch("chirp.adapter.dspy.configure"):
+                    adapter = ChirpAdapter()
+
+                with patch.dict(
+                    "chirp.adapter._MODULE_MAP",
+                    {"ChainOfThought": FakeProgram, "Predict": FakeProgram},
+                ):
+                    with patch(
+                        "chirp.adapter.dspy.context", return_value=nullcontext()
+                    ):
+                        result = adapter.call(
+                            "prompt -> answer",
+                            {"prompt": "hello"},
+                            {"answer": "string"},
+                            category=category,
+                            use_cache=False,
+                        )
+
+        assert result["model"] == "anthropic/claude-sonnet-5"
+        assert [call.args[0] for call in mock_lm.call_args_list] == [
+            "anthropic/claude-opus-5",
+            "anthropic/claude-sonnet-5",
+        ]
+
+    def test_no_override_uses_opus_5(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CHIRP_MODEL", None)
+            with patch("chirp.adapter.dspy.LM") as mock_lm:
+                with patch("chirp.adapter.dspy.configure"):
+                    mock_lm.return_value = "fake_lm"
+                    adapter = ChirpAdapter()
+
+        assert adapter._default_model == "anthropic/claude-opus-5"
+        mock_lm.assert_called_once_with("anthropic/claude-opus-5")
 
     def test_default_model_uses_provider_config(self):
         """CHIRP_MODEL=openai/mercury-2 + CHIRP_PROVIDERS should route correctly."""
