@@ -7,9 +7,11 @@
 
 using System;
 using System.Collections.Generic;
+using System.Net;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Tasks;
 using Rhino.Geometry;
 
 public class Script_Instance
@@ -25,7 +27,7 @@ public class Script_Instance
 
     private static readonly HttpClient _client = new HttpClient()
     {
-        Timeout = TimeSpan.FromSeconds(30)
+        Timeout = TimeSpan.FromSeconds(1830)
     };
 
     public void RunScript()
@@ -57,9 +59,11 @@ public class Script_Instance
             var json = JsonSerializer.Serialize(request);
             var content = new StringContent(json, Encoding.UTF8, "application/json");
 
-            var response = _client.PostAsync("http://localhost:9900/chirp/call", content).Result;
-            var body = response.Content.ReadAsStringAsync().Result;
+            var response = _client.PostAsync("http://localhost:9900/chirp/call", content).GetAwaiter().GetResult();
+            var body = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
 
+            if (response.StatusCode == HttpStatusCode.GatewayTimeout)
+                throw new Exception($"chirp_inference_timeout: {body}");
             if (!response.IsSuccessStatusCode)
             {
                 throw new Exception($"Chirp error ({response.StatusCode}): {body}");
@@ -71,6 +75,10 @@ public class Script_Instance
             UCount = outputs.GetProperty("u_count").GetInt32();
             VCount = outputs.GetProperty("v_count").GetInt32();
             Grading = outputs.GetProperty("grading").GetDouble();
+        }
+        catch (TaskCanceledException)
+        {
+            throw new Exception("chirp_transport_timeout: Chirp transport exceeded its 1830-second safety ceiling.");
         }
         catch (HttpRequestException)
         {

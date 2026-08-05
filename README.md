@@ -89,9 +89,12 @@ The adapter binds to `127.0.0.1:0` by default — the OS assigns a free port. A 
 | `CHIRP_MODEL` | `anthropic/claude-opus-5` | LLM model (any LiteLLM-compatible string) |
 | `CHIRP_PORT` | `0` (OS-assigned) | Port override — nonzero pins a specific port |
 | `CHIRP_CACHE` | `true` | Enable/disable in-memory result cache |
+| `CHIRP_INFERENCE_TIMEOUT_SECONDS` | `300` | Total `/chirp/call` budget in whole seconds; valid range `1..1800`, read once at startup |
 | `CHIRP_TRACE_DIR` | `./traces` | Directory for JSONL trace logs |
 | `CHIRP_RELOAD` | `0` | Set to `1` for uvicorn hot-reload during development |
 | `ANTHROPIC_API_KEY` | — | API key (loaded from `.env`) |
+
+The inference timeout is one aggregate budget across all DSPy/provider attempts and retry delays. Newly generated components use a stable 1,830-second transport safety ceiling so the generated client cannot preempt any valid Chirp budget. Chirp reports aggregate budget exhaustion as `chirp_inference_timeout`; the generated client reports its outer transport ceiling as `chirp_transport_timeout`.
 
 ## API Endpoints
 

@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 import os
 
+from chirp.timeout_policy import GENERATED_CLIENT_TIMEOUT_SECONDS
+
 # ── Category definitions ─────────────────────────────────────────────────
 # Each category defines the DSPy module and prompt strategy used at runtime.
 # The adapter reads the category to select the right reasoning approach.
@@ -310,8 +312,10 @@ def _generate_script(
     w("using System;")
     w("using System.Collections.Generic;")
     w("using System.Globalization;")
+    w("using System.Net;")
     w("using System.Net.Http;")
     w("using System.Text;")
+    w("using System.Threading.Tasks;")
     w("using Rhino;")
     w("using Rhino.Geometry;")
     w("using Grasshopper;")
@@ -323,7 +327,7 @@ def _generate_script(
     # HttpClient as static field
     w("    private static readonly HttpClient _client = new HttpClient()")
     w("    {")
-    w("        Timeout = TimeSpan.FromSeconds(30)")
+    w(f"        Timeout = TimeSpan.FromSeconds({GENERATED_CLIENT_TIMEOUT_SECONDS})")
     w("    };")
     w()
 
@@ -379,9 +383,11 @@ def _generate_script(
     # HTTP call
     w('            var content = new StringContent(json, Encoding.UTF8, "application/json");')
     w()
-    w(f'            var response = _client.PostAsync("http://localhost:{port}/chirp/call", content).Result;')
-    w('            var body = response.Content.ReadAsStringAsync().Result;')
+    w(f'            var response = _client.PostAsync("http://localhost:{port}/chirp/call", content).GetAwaiter().GetResult();')
+    w('            var body = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();')
     w()
+    w("            if (response.StatusCode == HttpStatusCode.GatewayTimeout)")
+    w('                throw new Exception($"chirp_inference_timeout: {body}");')
     w("            if (!response.IsSuccessStatusCode)")
     w('                throw new Exception($"Chirp error ({response.StatusCode}): {body}");')
     w()
@@ -407,6 +413,10 @@ def _generate_script(
         w(f"            {deterministic_code}")
 
     # Error handling
+    w("        }")
+    w("        catch (TaskCanceledException)")
+    w("        {")
+    w(f'            throw new Exception("chirp_transport_timeout: Chirp transport exceeded its {GENERATED_CLIENT_TIMEOUT_SECONDS}-second safety ceiling.");')
     w("        }")
     w("        catch (HttpRequestException)")
     w("        {")
