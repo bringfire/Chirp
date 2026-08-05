@@ -13,7 +13,7 @@ class TestCoercion:
     """Test the adapter's type coercion without hitting an LLM."""
 
     def setup_method(self):
-        self.adapter = ChirpAdapter()
+        self.adapter = ChirpAdapter(inference_timeout_seconds=300)
 
     def test_int_coercion(self):
         assert self.adapter._coerce("42", "int") == 42
@@ -48,7 +48,7 @@ class TestCacheKey:
     """Test deterministic cache key generation."""
 
     def setup_method(self):
-        self.adapter = ChirpAdapter()
+        self.adapter = ChirpAdapter(inference_timeout_seconds=300)
 
     def test_same_inputs_same_key(self):
         k1 = self.adapter._cache_key("a -> b", {"a": 1}, {"b": "int"}, "model-a")
@@ -107,7 +107,7 @@ class TestSecureDspyCache:
             with patch("chirp.adapter.dspy.LM") as mock_lm:
                 with patch("chirp.adapter.dspy.configure"):
                     mock_lm.return_value = "fake_lm"
-                    ChirpAdapter()
+                    ChirpAdapter(inference_timeout_seconds=300)
 
         configure_cache.assert_called_once()
 
@@ -126,7 +126,7 @@ class TestGetLm:
     """Test that _get_lm resolves provider config into dspy.LM kwargs."""
 
     def setup_method(self):
-        self.adapter = ChirpAdapter()
+        self.adapter = ChirpAdapter(inference_timeout_seconds=300)
 
     def test_default_model_returns_none(self):
         assert self.adapter._get_lm(None) is None
@@ -155,6 +155,7 @@ class TestGetLm:
                 lm = self.adapter._get_lm("openai/mercury-2")
                 mock_lm.assert_called_once_with(
                     "openai/mercury-2",
+                    timeout=300,
                     api_base="https://api.inceptionlabs.ai/v1",
                     api_key="test-key-123",
                 )
@@ -168,19 +169,20 @@ class TestDefaultModelProviderRouting:
         "category",
         ["interpreter", "critic", "narrator", "classifier", "gate", "editor"],
     )
-    def test_non_planner_calls_use_sonnet_5(self, category):
+    @pytest.mark.asyncio
+    async def test_non_planner_calls_use_sonnet_5(self, category):
         class FakeProgram:
             def __init__(self, _signature):
                 pass
 
-            def __call__(self, **_inputs):
+            async def acall(self, **_inputs):
                 return SimpleNamespace(answer="ok", reasoning="done")
 
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("CHIRP_MODEL", None)
             with patch("chirp.adapter.dspy.LM") as mock_lm:
                 with patch("chirp.adapter.dspy.configure"):
-                    adapter = ChirpAdapter()
+                    adapter = ChirpAdapter(inference_timeout_seconds=300)
 
                 with patch.dict(
                     "chirp.adapter._MODULE_MAP",
@@ -189,7 +191,7 @@ class TestDefaultModelProviderRouting:
                     with patch(
                         "chirp.adapter.dspy.context", return_value=nullcontext()
                     ):
-                        result = adapter.call(
+                        result = await adapter.acall(
                             "prompt -> answer",
                             {"prompt": "hello"},
                             {"answer": "string"},
@@ -202,6 +204,7 @@ class TestDefaultModelProviderRouting:
             "anthropic/claude-opus-5",
             "anthropic/claude-sonnet-5",
         ]
+        assert [call.kwargs["timeout"] for call in mock_lm.call_args_list] == [300, 300]
 
     def test_no_override_uses_opus_5(self):
         with patch.dict(os.environ, {}, clear=False):
@@ -209,10 +212,10 @@ class TestDefaultModelProviderRouting:
             with patch("chirp.adapter.dspy.LM") as mock_lm:
                 with patch("chirp.adapter.dspy.configure"):
                     mock_lm.return_value = "fake_lm"
-                    adapter = ChirpAdapter()
+                    adapter = ChirpAdapter(inference_timeout_seconds=300)
 
         assert adapter._default_model == "anthropic/claude-opus-5"
-        mock_lm.assert_called_once_with("anthropic/claude-opus-5")
+        mock_lm.assert_called_once_with("anthropic/claude-opus-5", timeout=300)
 
     def test_default_model_uses_provider_config(self):
         """CHIRP_MODEL=openai/mercury-2 + CHIRP_PROVIDERS should route correctly."""
@@ -230,9 +233,10 @@ class TestDefaultModelProviderRouting:
             with patch("chirp.adapter.dspy.LM") as mock_lm:
                 with patch("chirp.adapter.dspy.configure"):
                     mock_lm.return_value = "fake_lm"
-                    adapter = ChirpAdapter()
+                    adapter = ChirpAdapter(inference_timeout_seconds=300)
                     mock_lm.assert_called_once_with(
                         "openai/mercury-2",
+                        timeout=300,
                         api_base="https://api.inceptionlabs.ai/v1",
                         api_key="test-key-456",
                     )

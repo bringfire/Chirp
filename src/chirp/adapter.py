@@ -136,7 +136,8 @@ def _load_providers() -> dict[str, dict]:
 class ChirpAdapter:
     """Bridge between typed schemas and LLM calls, using DSPy modules."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, inference_timeout_seconds: int) -> None:
+        self._inference_timeout_seconds = inference_timeout_seconds
         configure_secure_dspy_cache()
         configured_model = os.environ.get("CHIRP_MODEL")
         self._default_model = configured_model or "anthropic/claude-opus-5"
@@ -162,7 +163,7 @@ class ChirpAdapter:
 
     def _make_lm(self, model: str) -> dspy.LM:
         """Create a dspy.LM with provider config resolved from CHIRP_PROVIDERS."""
-        kwargs: dict = {}
+        kwargs: dict = {"timeout": self._inference_timeout_seconds}
         provider_cfg = self._providers.get(model)
         if provider_cfg:
             if "api_base" in provider_cfg:
@@ -182,7 +183,7 @@ class ChirpAdapter:
             self._lm_cache[model] = self._make_lm(model)
         return self._lm_cache[model]
 
-    def call(
+    async def acall(
         self,
         signature: str,
         inputs: dict,
@@ -192,7 +193,7 @@ class ChirpAdapter:
         use_cache: bool | None = None,
         model: str | None = None,
     ) -> dict:
-        """Call the LLM with a signature and inputs, return validated typed outputs.
+        """Call the LLM asynchronously and return validated typed outputs.
 
         Args:
             signature: DSPy signature string, e.g. "surface_description, intent -> u_count, v_count"
@@ -270,9 +271,9 @@ class ChirpAdapter:
         active_lm = override_lm or self._lm
         if override_lm is not None:
             with dspy.context(lm=override_lm):
-                prediction = predict(**inputs)
+                prediction = await predict.acall(**inputs)
         else:
-            prediction = predict(**inputs)
+            prediction = await predict.acall(**inputs)
 
         elapsed_ms = (time.perf_counter() - start) * 1000
 

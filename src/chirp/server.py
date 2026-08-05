@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+import asyncio
 import json
 import os
 import tempfile
@@ -13,12 +14,14 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
-from dotenv import load_dotenv
-
-load_dotenv()
 
 from chirp.adapter import ChirpAdapter
 from chirp.rook_tool import chirp_create
+from chirp.timeout_policy import (
+    INVALID_TIMEOUT_CODE,
+    INVALID_TIMEOUT_MESSAGE,
+    read_inference_timeout_policy,
+)
 from chirp.tracing import TraceLogger
 
 # --- Discovery file (written only after server is ready) ---
@@ -110,7 +113,13 @@ async def _lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Chirp", version="0.1.0", lifespan=_lifespan)
-adapter = ChirpAdapter()
+inference_timeout_policy = read_inference_timeout_policy()
+inference_timeout_seconds = inference_timeout_policy.timeout_seconds
+adapter = (
+    ChirpAdapter(inference_timeout_seconds=inference_timeout_seconds)
+    if inference_timeout_seconds is not None
+    else None
+)
 tracer = TraceLogger()
 
 
@@ -140,16 +149,22 @@ class ErrorResponse(BaseModel):
 
 
 @app.post("/chirp/call", response_model=CallResponse)
-def chirp_call(req: CallRequest):
+async def chirp_call(req: CallRequest):
+    if not inference_timeout_policy.enabled:
+        return _invalid_timeout_response()
+
     effective_model = req.model or adapter._default_model
     try:
-        result = adapter.call(
-            signature=req.signature,
-            inputs=req.inputs,
-            schema=req.schema_,
-            category=req.category,
-            use_cache=req.cache,
-            model=req.model,
+        result = await asyncio.wait_for(
+            adapter.acall(
+                signature=req.signature,
+                inputs=req.inputs,
+                schema=req.schema_,
+                category=req.category,
+                use_cache=req.cache,
+                model=req.model,
+            ),
+            timeout=inference_timeout_seconds,
         )
         tracer.log(
             signature=req.signature,
@@ -163,6 +178,17 @@ def chirp_call(req: CallRequest):
             model=result.get("model"),
         )
         return CallResponse(**result)
+    except asyncio.TimeoutError:
+        return JSONResponse(
+            status_code=504,
+            content={
+                "error": "chirp_inference_timeout",
+                "details": "Chirp inference exceeded its configured total request budget.",
+                "timeout_seconds": inference_timeout_seconds,
+            },
+        )
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         tracer.log(
             signature=req.signature,
@@ -195,6 +221,9 @@ class CreateRequest(BaseModel):
 
 @app.post("/chirp/create")
 def chirp_create_endpoint(req: CreateRequest):
+    if not inference_timeout_policy.enabled:
+        return _invalid_timeout_response()
+
     try:
         result = chirp_create(
             pins_in=req.pins_in,
@@ -215,6 +244,25 @@ def chirp_create_endpoint(req: CreateRequest):
         )
 
 
+def _invalid_timeout_response() -> JSONResponse:
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": INVALID_TIMEOUT_CODE,
+            "details": INVALID_TIMEOUT_MESSAGE,
+        },
+    )
+
+
 @app.get("/health")
 def health() -> dict:
+    if not inference_timeout_policy.enabled:
+        return {
+            "status": "disabled",
+            "version": "0.1.0",
+            "error": {
+                "code": INVALID_TIMEOUT_CODE,
+                "message": INVALID_TIMEOUT_MESSAGE,
+            },
+        }
     return {"status": "ok", "version": "0.1.0"}
