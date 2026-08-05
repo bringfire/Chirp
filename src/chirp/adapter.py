@@ -138,7 +138,11 @@ class ChirpAdapter:
 
     def __init__(self) -> None:
         configure_secure_dspy_cache()
-        self._default_model = os.environ.get("CHIRP_MODEL", "anthropic/claude-opus-5")
+        configured_model = os.environ.get("CHIRP_MODEL")
+        self._default_model = configured_model or "anthropic/claude-opus-5"
+        self._non_planner_default_model = (
+            configured_model or "anthropic/claude-sonnet-5"
+        )
 
         # Provider config: maps model strings to api_base + api_key_env.
         # Loaded from CHIRP_PROVIDERS env var (JSON), e.g.:
@@ -210,7 +214,13 @@ class ChirpAdapter:
                 model: the model used for this call
         """
         should_cache = use_cache if use_cache is not None else self._cache_enabled
-        effective_model = model or self._default_model
+        cat = (category or "").lower().strip()
+        category_default = (
+            self._non_planner_default_model
+            if cat in _CATEGORY_MODULES and cat != "planner"
+            else self._default_model
+        )
+        effective_model = model or category_default
 
         # Check cache (model is part of the key — different model = different result)
         if should_cache:
@@ -227,7 +237,6 @@ class ChirpAdapter:
         correction_text = str(correction).strip() if correction else ""
 
         # Build category context — injected as system_context input
-        cat = (category or "").lower().strip()
         prompt_prefix = _CATEGORY_PROMPTS.get(cat, "")
 
         # Compose system context from category prompt + correction
@@ -257,7 +266,7 @@ class ChirpAdapter:
         predict = module_cls(typed_sig)
 
         # Per-call model override via dspy.context
-        override_lm = self._get_lm(model)
+        override_lm = self._get_lm(effective_model)
         active_lm = override_lm or self._lm
         if override_lm is not None:
             with dspy.context(lm=override_lm):
