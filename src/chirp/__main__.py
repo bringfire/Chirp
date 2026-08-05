@@ -4,9 +4,9 @@ import os
 import socket
 
 import uvicorn
-from dotenv import load_dotenv
+from chirp.timeout_policy import load_canonical_environment
 
-load_dotenv()
+load_canonical_environment()
 
 requested_port = int(os.environ.get("CHIRP_PORT", "0"))
 reload = os.environ.get("CHIRP_RELOAD", "0") == "1"
@@ -24,9 +24,19 @@ if reload:
     # Reload mode can't pass sockets across subprocess boundaries;
     # close and let uvicorn rebind to the known port.
     sock.close()
-    uvicorn.run("chirp.server:app", host="127.0.0.1", port=actual_port, reload=True)
+    uvicorn.run(
+        "chirp.server:app",
+        host="127.0.0.1",
+        port=actual_port,
+        reload=True,
+        timeout_graceful_shutdown=30,
+    )
 else:
     # Pass the pre-bound socket directly — no close/rebind race.
-    config = uvicorn.Config("chirp.server:app", host="127.0.0.1")
+    config = uvicorn.Config(
+        "chirp.server:app",
+        host="127.0.0.1",
+        timeout_graceful_shutdown=30,
+    )
     server = uvicorn.Server(config)
     server.run(sockets=[sock])
