@@ -23,6 +23,12 @@ from chirp.timeout_policy import (
     read_inference_timeout_policy,
 )
 from chirp.tracing import TraceLogger
+from chirp.vertex_bootstrap import (
+    VertexAuthError,
+    VertexBootstrap,
+    VertexRestartRequired,
+    vertex_gemini_model_name,
+)
 
 # --- Discovery file (written only after server is ready) ---
 _DISCOVERY_FOLDER = Path(tempfile.gettempdir()) / "rook"
@@ -115,12 +121,44 @@ async def _lifespan(app: FastAPI):
 app = FastAPI(title="Chirp", version="0.1.0", lifespan=_lifespan)
 inference_timeout_policy = read_inference_timeout_policy()
 inference_timeout_seconds = inference_timeout_policy.timeout_seconds
+_rook_managed = False
+_vertex_bootstrap: VertexBootstrap | None = None
 adapter = (
-    ChirpAdapter(inference_timeout_seconds=inference_timeout_seconds)
+    ChirpAdapter(
+        inference_timeout_seconds=inference_timeout_seconds,
+        rook_managed=_rook_managed,
+        vertex_bootstrap=_vertex_bootstrap,
+    )
     if inference_timeout_seconds is not None
     else None
 )
 tracer = TraceLogger()
+
+
+def configure_bound_port(port: int) -> None:
+    """Update discovery paths after the entry point binds an OS-assigned port."""
+    global _CHIRP_PORT, _DISCOVERY_FILE
+    _CHIRP_PORT = port
+    _DISCOVERY_FILE = _DISCOVERY_FOLDER / f"chirp-service-{port}.json"
+
+
+def configure_runtime(
+    *,
+    rook_managed: bool,
+    vertex_bootstrap: VertexBootstrap | None,
+) -> None:
+    """Apply private process bootstrap state before the server starts."""
+    global _rook_managed, _vertex_bootstrap, adapter
+    _rook_managed = bool(rook_managed)
+    _vertex_bootstrap = vertex_bootstrap
+    if inference_timeout_seconds is None:
+        adapter = None
+        return
+    adapter = ChirpAdapter(
+        inference_timeout_seconds=inference_timeout_seconds,
+        rook_managed=rook_managed,
+        vertex_bootstrap=vertex_bootstrap,
+    )
 
 
 class CallRequest(BaseModel):
@@ -189,6 +227,11 @@ async def chirp_call(req: CallRequest):
         )
     except asyncio.CancelledError:
         raise
+    except VertexAuthError as e:
+        return JSONResponse(
+            status_code=503,
+            content={"error": e.code, "details": e.public_message},
+        )
     except Exception as e:
         tracer.log(
             signature=req.signature,
@@ -225,6 +268,8 @@ def chirp_create_endpoint(req: CreateRequest):
         return _invalid_timeout_response()
 
     try:
+        effective_model = adapter.resolve_model(req.category, req.model)
+        _assert_vertex_runtime(effective_model)
         result = chirp_create(
             pins_in=req.pins_in,
             pins_out=req.pins_out,
@@ -237,6 +282,11 @@ def chirp_create_endpoint(req: CreateRequest):
             model=req.model,
         )
         return result
+    except VertexAuthError as e:
+        return JSONResponse(
+            status_code=503,
+            content={"error": e.code, "details": e.public_message},
+        )
     except ValueError as e:
         return JSONResponse(
             status_code=400,
@@ -256,13 +306,76 @@ def _invalid_timeout_response() -> JSONResponse:
 
 @app.get("/health")
 def health() -> dict:
+    vertex_state, vertex_error = _vertex_health()
+    base = {
+        "version": "0.1.0",
+        "rook_managed": _rook_managed,
+        "vertex": {"status": vertex_state},
+    }
     if not inference_timeout_policy.enabled:
         return {
             "status": "disabled",
-            "version": "0.1.0",
+            **base,
             "error": {
                 "code": INVALID_TIMEOUT_CODE,
                 "message": INVALID_TIMEOUT_MESSAGE,
             },
         }
-    return {"status": "ok", "version": "0.1.0"}
+    if vertex_error is not None:
+        return {
+            "status": "disabled",
+            **base,
+            "error": {
+                "code": vertex_error.code,
+                "message": vertex_error.public_message,
+            },
+        }
+    return {"status": "ok", **base}
+
+
+def _vertex_health() -> tuple[str, VertexAuthError | None]:
+    state = "absent"
+    generation_error: VertexRestartRequired | None = None
+    if _vertex_bootstrap is not None:
+        try:
+            _vertex_bootstrap.assert_current_generation()
+            state = "ready"
+        except VertexRestartRequired as exc:
+            state = "stale"
+            generation_error = exc
+
+    default_model = (
+        adapter._default_model
+        if adapter is not None
+        else os.environ.get("CHIRP_MODEL", "anthropic/claude-opus-5")
+    )
+    try:
+        is_vertex = vertex_gemini_model_name(default_model) is not None
+    except VertexAuthError as exc:
+        return state, exc
+    if not is_vertex:
+        return state, None
+    if _vertex_bootstrap is None and _rook_managed:
+        return state, VertexAuthError(
+            "vertex_signed_out",
+            "Vertex AI is not configured for this managed Chirp process.",
+        )
+    if generation_error is not None:
+        return state, generation_error
+    default_error = getattr(adapter, "_default_model_error", None)
+    if isinstance(default_error, VertexAuthError):
+        return state, default_error
+    return state, None
+
+
+def _assert_vertex_runtime(model: str | None) -> None:
+    if vertex_gemini_model_name(model) is None:
+        return
+    if _vertex_bootstrap is None:
+        if _rook_managed:
+            raise VertexAuthError(
+                "vertex_signed_out",
+                "Vertex AI is not configured for this managed Chirp process.",
+            )
+        return
+    _vertex_bootstrap.assert_current_generation()
