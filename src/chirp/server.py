@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from chirp.adapter import ChirpAdapter
+from chirp.adapter import ChirpAdapter, ModelUnavailable
 from chirp.rook_tool import chirp_create
 from chirp.tracing import TraceLogger
 
@@ -163,6 +163,24 @@ def chirp_call(req: CallRequest):
             model=result.get("model"),
         )
         return CallResponse(**result)
+    except ModelUnavailable as e:
+        # No credential for the model: answer at once so the component can fall
+        # back to its frozen result or deterministic defaults.
+        tracer.log(
+            signature=req.signature,
+            inputs=req.inputs,
+            schema=req.schema_,
+            outputs=None,
+            error=str(e),
+            latency_ms=0,
+            usage={"input_tokens": 0, "output_tokens": 0},
+            cache_hit=False,
+            model=effective_model,
+        )
+        return JSONResponse(
+            status_code=503,
+            content={"error": "model_unavailable", "details": str(e)},
+        )
     except Exception as e:
         tracer.log(
             signature=req.signature,
@@ -217,4 +235,11 @@ def chirp_create_endpoint(req: CreateRequest):
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.1.0"}
+    reason = adapter.model_unavailable_reason()
+    return {
+        "status": "ok",
+        "version": "0.1.0",
+        "model": adapter._default_model,
+        "model_ready": reason is None,
+        "model_reason": reason,
+    }

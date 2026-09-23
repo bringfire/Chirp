@@ -133,6 +133,40 @@ def _load_providers() -> dict[str, dict]:
         return {}
 
 
+class ModelUnavailable(RuntimeError):
+    """The requested model cannot be called right now (for example: no credential).
+
+    Raised before any LLM traffic so the caller can fall back immediately instead
+    of waiting for LiteLLM's authentication retries.
+    """
+
+
+# Providers whose credential is one well-known env var. Local or OpenAI-compatible
+# endpoints configured through CHIRP_PROVIDERS carry their own api_key_env and
+# need nothing here; unknown prefixes are left to LiteLLM.
+_CREDENTIAL_ENV_BY_PREFIX: dict[str, tuple[str, ...]] = {
+    "anthropic/": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"),
+    "openai/": ("OPENAI_API_KEY",),
+    "openrouter/": ("OPENROUTER_API_KEY",),
+    "gemini/": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+}
+
+
+def missing_credential(model: str, provider_cfg: dict | None = None) -> str | None:
+    """Return a human-readable reason when ``model`` has no usable credential, else None."""
+    if provider_cfg:
+        api_key_env = provider_cfg.get("api_key_env")
+        if api_key_env and not os.environ.get(api_key_env):
+            return f"{api_key_env} is not set for {model}"
+        return None  # custom endpoint without a declared key: nothing to require
+    for prefix, env_names in _CREDENTIAL_ENV_BY_PREFIX.items():
+        if model.startswith(prefix):
+            if any(os.environ.get(name) for name in env_names):
+                return None
+            return f"{env_names[0]} is not set for {model}"
+    return None
+
+
 class ChirpAdapter:
     """Bridge between typed schemas and LLM calls, using DSPy modules."""
 
@@ -161,7 +195,11 @@ class ChirpAdapter:
         self._cache: dict[str, dict] = {}
 
     def _make_lm(self, model: str) -> dspy.LM:
-        """Create a dspy.LM with provider config resolved from CHIRP_PROVIDERS."""
+        """Create a dspy.LM with provider config resolved from CHIRP_PROVIDERS.
+
+        Also records whether the model is callable at all (``model_unavailable_reason``)
+        so ``call()`` can fail fast instead of paying LiteLLM's auth retries.
+        """
         kwargs: dict = {}
         provider_cfg = self._providers.get(model)
         if provider_cfg:
@@ -172,7 +210,24 @@ class ChirpAdapter:
                 api_key = os.environ.get(api_key_env)
                 if api_key:
                     kwargs["api_key"] = api_key
+        if not hasattr(self, "_unavailable"):
+            self._unavailable: dict[str, str] = {}
+        reason = missing_credential(model, provider_cfg)
+        if reason:
+            self._unavailable[model] = reason
+        else:
+            self._unavailable.pop(model, None)
         return dspy.LM(model, **kwargs)
+
+    def model_unavailable_reason(self, model: str | None = None) -> str | None:
+        """Why ``model`` (default: the adapter default) cannot be called, or None."""
+        target = model or self._default_model
+        if target not in self._lm_cache:
+            self._lm_cache[target] = self._make_lm(target)
+        return self._unavailable.get(target)
+
+    def model_ready(self, model: str | None = None) -> bool:
+        return self.model_unavailable_reason(model) is None
 
     def _get_lm(self, model: str | None) -> dspy.LM | None:
         """Return a dspy.LM for the given model string, or None for default."""
@@ -229,6 +284,13 @@ class ChirpAdapter:
                 cached = self._cache[cache_key].copy()
                 cached["cached"] = True
                 return cached
+
+        # Fail fast when the model has no credential: the component falls back to
+        # its frozen result or deterministic defaults instead of waiting ~12 s for
+        # LiteLLM's authentication retries.
+        reason = self.model_unavailable_reason(effective_model)
+        if reason:
+            raise ModelUnavailable(reason)
 
         start = time.perf_counter()
 

@@ -41,8 +41,9 @@ class TestChirpCreate:
         assert "script" in result
         assert "pins_in" in result
         assert "pins_out" in result
-        # 2 user pins + auto-added Correction
-        assert len(result["pins_in"]) == 3
+        # 2 user pins + auto-added Correction, Freeze, Frozen
+        assert len(result["pins_in"]) == 5
+        assert [p["name"] for p in result["pins_in"]] == ["SurfaceDesc", "Intent", "Correction", "Freeze", "Frozen"]
         # 3 user pins + auto-added Reasoning
         assert len(result["pins_out"]) == 4
 

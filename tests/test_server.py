@@ -151,8 +151,8 @@ def test_chirp_create_returns_script():
     data = resp.json()
     assert "script" in data
     assert "localhost:9900/chirp/call" in data["script"]
-    # 2 user pins + auto-added Correction
-    assert len(data["pins_in"]) == 3
+    # 2 user pins + auto-added Correction, Freeze, Frozen
+    assert len(data["pins_in"]) == 5
     # 3 user pins + auto-added Reasoning
     assert len(data["pins_out"]) == 4
 

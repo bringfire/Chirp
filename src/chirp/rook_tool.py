@@ -114,6 +114,10 @@ JSON_READ_MAP: dict[str, str] = {
 }
 
 
+# Universal pins added to every LLM-backed component (see docs/plans/2026-09-23-*).
+RESERVED_FROZEN_PINS = frozenset({"freeze", "frozen"})
+
+
 def parse_pin(pin_def: str) -> tuple[str, str]:
     """Parse a pin definition like 'UCount:int' into (name, type)."""
     parts = pin_def.split(":")
@@ -201,10 +205,20 @@ def chirp_create(
                 f"Input pin name {pin_name!r} is reserved (auto-added for human corrections). "
                 f"Use a different name like 'Override' or 'Adjustment'."
             )
+        if pin_name.lower() in RESERVED_FROZEN_PINS:
+            raise ValueError(
+                f"Input pin name {pin_name!r} is reserved (auto-added for frozen results). "
+                f"Use a different name like 'Locked' or 'Snapshot'."
+            )
 
-    # ── Auto-add Correction input pin ────────────────────────────────
-    # Correction is always the last input — human override, optional.
+    # ── Auto-add universal input pins ────────────────────────────────
+    # Correction is always after the domain inputs — human override, optional.
+    # LLM components also get Freeze (replay on demand) and Frozen (the snapshot
+    # that travels with the .gh file); deterministic-only components never call
+    # the model, so they carry neither.
     all_in_pins = list(in_pins) + [("Correction", "string")]
+    if not deterministic_only:
+        all_in_pins += [("Freeze", "bool"), ("Frozen", "string")]
 
     # Build schema from output pins
     schema = {}
@@ -233,6 +247,22 @@ def chirp_create(
 
     all_in_pins_list = [{"name": n, "type": t} for n, t in in_pins]
     all_in_pins_list.append({"name": "Correction", "type": "string"})
+    if not deterministic_only:
+        all_in_pins_list.append({
+            "name": "Freeze",
+            "type": "bool",
+            "optional": True,
+            "description": "True: replay the frozen result and never call the model.",
+        })
+        all_in_pins_list.append({
+            "name": "Frozen",
+            "type": "string",
+            "optional": True,
+            "description": (
+                "Frozen result captured after the last successful model call; stored as "
+                "persistent data so it travels with the .gh file. Wire a Panel to supply one."
+            ),
+        })
 
     return {
         "script": script,
@@ -316,9 +346,14 @@ def _generate_script(
     w("using Rhino.Geometry;")
     w("using Grasshopper;")
     w("using Grasshopper.Kernel;")
+    w("using Grasshopper.Kernel.Parameters;")
+    w("using Grasshopper.Kernel.Types;")
     w()
     w("public class Script_Instance : GH_ScriptInstance")
     w("{")
+    frozen_index = [n for n, _ in in_pins].index("Frozen")
+    w(f"    private const int FrozenPinIndex = {frozen_index};")
+    w()
 
     # HttpClient as static field
     w("    private static readonly HttpClient _client = new HttpClient()")
@@ -337,7 +372,7 @@ def _generate_script(
 
     # Build inputs dict — cast from object to expected type
     # Correction is included in in_pins but handled specially below
-    domain_pins = [(n, t) for n, t in in_pins if n != "Correction"]
+    domain_pins = [(n, t) for n, t in in_pins if n != "Correction" and n.lower() not in RESERVED_FROZEN_PINS]
     w("            var inputs = new Dictionary<string, object>")
     w("            {")
     for i, (name, type_str) in enumerate(domain_pins):
@@ -376,47 +411,115 @@ def _generate_script(
     w(f'            var json = BuildRequestJson(@"{escaped_sig}", @"{escaped_cat}", {model_arg}, inputs, schema);')
     w()
 
-    # HTTP call
-    w('            var content = new StringContent(json, Encoding.UTF8, "application/json");')
-    w()
-    w(f'            var response = _client.PostAsync("http://localhost:{port}/chirp/call", content).Result;')
-    w('            var body = response.Content.ReadAsStringAsync().Result;')
-    w()
-    w("            if (!response.IsSuccessStatusCode)")
-    w('                throw new Exception($"Chirp error ({response.StatusCode}): {body}");')
+    # === Model call with frozen replay and deterministic fallback ===
+    # Order: Freeze on + snapshot -> replay; else call the adapter; on any adapter
+    # failure -> replay the snapshot if present, else typed defaults. The component
+    # never throws for a missing model; Reasoning always says which path ran.
+    url = f"http://localhost:{port}/chirp/call"
+    unreachable = f"adapter not running on localhost:{port}"
+    w("            // === Model call with frozen replay and deterministic fallback ===")
+    w("            var freeze = ReadFlag(Freeze);")
+    w('            var frozenText = Frozen?.ToString() ?? "";')
+    w("            var inputsHash = HashText(json);")
+    w("            string body = null;")
+    w('            string mode = "live";')
+    w('            string note = "";')
+    w("            if (freeze && HasSnapshot(frozenText))")
+    w("            {")
+    w('                body = ExtractObject(frozenText, "body");')
+    w('                mode = "frozen";')
+    w("            }")
+    w("            else")
+    w("            {")
+    w("                try")
+    w("                {")
+    w('                    var content = new StringContent(json, Encoding.UTF8, "application/json");')
+    w('                    var response = _client.PostAsync("' + url + '", content).Result;')
+    w("                    var text = response.Content.ReadAsStringAsync().Result;")
+    w("                    if (response.IsSuccessStatusCode)")
+    w("                        body = text;")
+    w("                    else")
+    w("                        note = DescribeAdapterError((int)response.StatusCode, text);")
+    w("                }")
+    w("                catch (Exception)")
+    w("                {")
+    w('                    note = "' + unreachable + '";')
+    w("                }")
+    w("                if (body == null)")
+    w("                {")
+    w("                    if (HasSnapshot(frozenText))")
+    w("                    {")
+    w('                        body = ExtractObject(frozenText, "body");')
+    w('                        mode = "frozen-fallback";')
+    w("                    }")
+    w("                    else")
+    w("                    {")
+    w('                        mode = "defaults";')
+    w("                    }")
+    w("                }")
+    w("            }")
     w()
 
     # Parse outputs and assign to ref params. These helpers intentionally avoid
     # System.Text.Json because Rhino.Inside C# script components may not resolve it.
-    w('            var result = ExtractObject(body, "outputs");')
-    w()
+    # Live and replayed bodies share this path; defaults are the typed zero values.
+    w('            var reasoningText = "";')
+    w("            if (body != null)")
+    w("            {")
+    w('                var result = ExtractObject(body, "outputs");')
     for name, type_str in out_pins:
         snake = _to_snake(name)
         reader = _csharp_json_reader(type_str)
         # Cast to object for ref assignment
-        w(f'            {name} = (object){reader}(result, "{snake}");')
-
-    # Reasoning — expose the LLM's chain of thought
+        w(f'                {name} = (object){reader}(result, "{snake}");')
+    w('                reasoningText = ReadString(body, "reasoning");')
+    w("            }")
+    w("            else")
+    w("            {")
+    w("                // === Deterministic defaults ===")
+    for name, type_str in out_pins:
+        w(f"                {name} = (object){_default_literal(type_str)};")
+    w("            }")
     w()
-    w('            Reasoning = (object)ReadString(body, "reasoning");')
 
-    # Deterministic post-processing
+    # Reasoning — expose the LLM's chain of thought, prefixed by the path taken.
+    w('            if (mode == "live")')
+    w("            {")
+    w("                Reasoning = (object)reasoningText;")
+    w("                TryWriteFrozen(frozenText, BuildSnapshot(inputsHash, body));")
+    w("            }")
+    w('            else if (mode == "frozen")')
+    w("            {")
+    w('                Reasoning = (object)("[frozen] " + reasoningText);')
+    w("            }")
+    w('            else if (mode == "frozen-fallback")')
+    w("            {")
+    w('                var changed = ReadString(frozenText, "inputs") != inputsHash;')
+    w('                var detail = note + (changed ? "; inputs changed since capture" : "");')
+    w('                Reasoning = (object)("[frozen replay: " + detail + "] " + reasoningText);')
+    w('                Warn("Chirp replayed its frozen result (" + detail + ")");')
+    w("            }")
+    w("            else")
+    w("            {")
+    w('                Reasoning = (object)("[deterministic fallback: " + note + "]");')
+    w('                Warn("Chirp used deterministic defaults (" + note + ")");')
+    w("            }")
+
+    # Deterministic post-processing runs after outputs on every path (live,
+    # frozen, fallback), so an author-supplied rule also shapes the fallback.
     if deterministic_code:
         w()
         w("            // === Deterministic post-processing ===")
         w(f"            {deterministic_code}")
 
-    # Error handling
-    w("        }")
-    w("        catch (HttpRequestException)")
-    w("        {")
-    w(f'            Print("Chirp: adapter not running on localhost:{port}");')
+    # Error handling — only contract and compile errors reach here now.
     w("        }")
     w("        catch (Exception ex)")
     w("        {")
     w('            throw new Exception($"Chirp: {ex.Message}");')
     w("        }")
     w("    }")
+    _write_frozen_helpers(w)
     _write_json_helpers(w)
     w("}")
 
@@ -432,6 +535,113 @@ def _csharp_json_reader(type_str: str) -> str:
     if type_str == "bool":
         return "ReadBool"
     return "ReadString"
+
+
+def _default_literal(type_str: str) -> str:
+    """C# literal used for an output pin when no model result is available."""
+    if type_str == "int":
+        return "0"
+    if type_str in {"float", "double"}:
+        return "0.0"
+    if type_str == "bool":
+        return "false"
+    return '""'
+
+
+def _write_frozen_helpers(w) -> None:
+    """Emit the frozen-result helpers: flag/hash/snapshot utilities and the
+    persistent-data write that makes the last model result travel with the .gh."""
+    w()
+    w("    private static bool ReadFlag(object value)")
+    w("    {")
+    w("        if (value is bool flag) return flag;")
+    w("        bool parsed;")
+    w("        return value != null && bool.TryParse(value.ToString(), out parsed) && parsed;")
+    w("    }")
+    w()
+    w("    private static bool HasSnapshot(string text)")
+    w("    {")
+    w("        if (string.IsNullOrWhiteSpace(text)) return false;")
+    w("        var trimmed = text.TrimStart();")
+    w("        if (trimmed.Length == 0 || trimmed[0] != '{') return false;")
+    w('        var body = ExtractRawProperty(trimmed, "body");')
+    w("        return !string.IsNullOrWhiteSpace(body) && body.TrimStart().StartsWith(\"{\");")
+    w("    }")
+    w()
+    w("    private static string HashText(string text)")
+    w("    {")
+    w("        // FNV-1a 32-bit over UTF-8: stable across solves and machines.")
+    w("        uint hash = 2166136261;")
+    w('        foreach (var b in Encoding.UTF8.GetBytes(text ?? ""))')
+    w("        {")
+    w("            hash ^= b;")
+    w("            hash *= 16777619;")
+    w("        }")
+    w('        return hash.ToString("x8");')
+    w("    }")
+    w()
+    w("    private static string BuildSnapshot(string inputsHash, string body)")
+    w("    {")
+    w("        var sb = new StringBuilder();")
+    w('        sb.Append("{\\"v\\":1,");')
+    w('        AppendStringProperty(sb, "captured", DateTime.UtcNow.ToString("o"));')
+    w('        sb.Append(",");')
+    w('        AppendStringProperty(sb, "inputs", inputsHash);')
+    w('        sb.Append(",\\"body\\":");')
+    w("        sb.Append(body);")
+    w('        sb.Append("}");')
+    w("        return sb.ToString();")
+    w("    }")
+    w()
+    w("    private static string DescribeAdapterError(int status, string text)")
+    w("    {")
+    w('        var code = ReadString(text ?? "", "error");')
+    w('        var details = ReadString(text ?? "", "details");')
+    w("        if (!string.IsNullOrWhiteSpace(code))")
+    w('            return code + (string.IsNullOrWhiteSpace(details) ? "" : ": " + details);')
+    w('        return "adapter error " + status;')
+    w("    }")
+    w()
+    w("    private void Warn(string message)")
+    w("    {")
+    w("        // Rhino 8 script instances expose AddRuntimeMessage directly (like Print).")
+    w("        try { AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, message); }")
+    w("        catch (Exception) { Print(message); }")
+    w("    }")
+    w()
+    w("    private void TryWriteFrozen(string current, string snapshot)")
+    w("    {")
+    w("        // Store the snapshot as the Frozen pin's persistent data (what 'Internalise")
+    w("        // data' does), so it is saved in the .gh and collected on the next solve.")
+    w("        try")
+    w("        {")
+    w("            if (Component == null || string.IsNullOrEmpty(snapshot)) return;")
+    w("            if (FrozenPinIndex >= Component.Params.Input.Count) return;")
+    w("            var param = Component.Params.Input[FrozenPinIndex];")
+    w("            if (param.SourceCount > 0) return; // a wired snapshot belongs to the user")
+    w("            if (!string.IsNullOrEmpty(current)")
+    w('                && ExtractRawProperty(current, "body") == ExtractRawProperty(snapshot, "body")')
+    w('                && ReadString(current, "inputs") == ReadString(snapshot, "inputs"))')
+    w("                return; // unchanged result: do not dirty the document for a new timestamp")
+    w("            var generic = param as Param_GenericObject;")
+    w("            if (generic != null)")
+    w("            {")
+    w("                generic.PersistentData.Clear();")
+    w("                generic.PersistentData.Append(new GH_ObjectWrapper(snapshot));")
+    w("                return;")
+    w("            }")
+    w("            var text = param as Param_String;")
+    w("            if (text != null)")
+    w("            {")
+    w("                text.PersistentData.Clear();")
+    w("                text.PersistentData.Append(new GH_String(snapshot));")
+    w("            }")
+    w("        }")
+    w("        catch (Exception ex)")
+    w("        {")
+    w('            Print("Chirp: could not store the frozen result: " + ex.Message);')
+    w("        }")
+    w("    }")
 
 
 def _write_json_helpers(w) -> None:
