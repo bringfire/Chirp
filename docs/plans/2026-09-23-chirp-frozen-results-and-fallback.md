@@ -1,6 +1,15 @@
 # Chirp frozen results and deterministic fallback
 
-**Date:** 2026-09-23 · **Status:** scope pass, implementation in progress · **Rook side:** skill text only
+**Date:** 2026-09-23 · **Status:** implemented; live Grasshopper gate PASSED 2026-09-24 · **Rook side:** skill text only
+
+**Gate result (Rhino 8.35, standalone, fake adapter on 9977, no key):** live solve wrote the snapshot
+into the Frozen pin's persistent data; with the adapter stopped the *first* re-solve replayed it
+(`[frozen replay: adapter not running…]`, runtime warning); after save → close → reopen from disk the
+replay came from the file; `Freeze=true` replayed as `[frozen]` with no warning. A component built
+before the `GH_String` fix, reopened from the same file, came back with an empty `GH_ObjectWrapper`
+and fell to `[deterministic fallback…]`, confirming both the serialisation finding and the fallback.
+Three findings folded in: `unchecked` for the FNV hash (RhinoCode compiles with overflow checks),
+`RefreshPin` (ClearData + CollectData) after every write, and `GH_String` storage.
 
 ## Problem
 
