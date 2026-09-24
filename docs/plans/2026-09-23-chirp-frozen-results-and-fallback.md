@@ -11,6 +11,20 @@ and fell to `[deterministic fallback…]`, confirming both the serialisation fin
 Three findings folded in: `unchecked` for the FNV hash (RhinoCode compiles with overflow checks),
 `RefreshPin` (ClearData + CollectData) after every write, and `GH_String` storage.
 
+**Review round 1 (Codex) and gate v2, 2026-09-24.** Two defects fixed: (P1) Grasshopper runs
+`RunScript` once per list item and each iteration overwrote the single snapshot; the Frozen pin now
+holds ONE aggregate store (a single `GH_String`, so longest-list matching is unaffected) with one
+entry per iteration, `{"v":2,"count":N,"items":{"i0":{captured,inputs,body},…}}`, found by inputs
+hash first, then by iteration index; later iterations read the pin's persistent data directly so they
+see entries written earlier in the same solve, and the pin is refreshed after the last iteration only.
+(P2) `Freeze=true` with no entry now uses typed defaults with the note "Freeze is on and no frozen
+result exists for this item" and never contacts the adapter. Gate v2 (two briefs `A`,`B`, fake
+adapter echoing the brief): per-item live outputs, per-item replay on the first re-solve, per-item
+replay after save → close → reopen, `[frozen]` per item, and zero adapter calls with the adapter up
+for both a frozen component and a Freeze-on component without a store. Merged with master
+(timeout policy + Vertex): timeouts stay hard errors, `/health` unchanged, readiness at
+`GET /health/model`.
+
 ## Problem
 
 A Chirp component is a Grasshopper script that calls the adapter on every solve. Without a
