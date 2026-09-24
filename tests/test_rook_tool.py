@@ -85,8 +85,16 @@ class TestChirpCreate:
             signature="x -> y",
             category="planner",
         )
-        assert "localhost:9900/chirp/call" in result["script"]
-        assert "HttpClient" in result["script"]
+        script = result["script"]
+        assert "localhost:9900/chirp/call" in script
+        assert "HttpClient" in script
+        assert "TimeSpan.FromSeconds(1830)" in script
+        assert "HttpStatusCode.GatewayTimeout" in script
+        assert "chirp_inference_timeout" in script
+        assert "catch (TaskCanceledException)" in script
+        assert "chirp_transport_timeout" in script
+        assert ".GetAwaiter().GetResult()" in script
+        assert "TimeSpan.FromSeconds(30)" not in script
 
     def test_geometry_input_uses_tostring(self):
         result = chirp_create(

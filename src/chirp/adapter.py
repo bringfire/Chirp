@@ -11,6 +11,11 @@ from pathlib import Path
 import dspy
 
 from chirp.types import build_output_model, resolve_type
+from chirp.vertex_bootstrap import (
+    VertexAuthError,
+    VertexBootstrap,
+    vertex_gemini_model_name,
+)
 
 
 # Module selection per category
@@ -170,7 +175,16 @@ def missing_credential(model: str, provider_cfg: dict | None = None) -> str | No
 class ChirpAdapter:
     """Bridge between typed schemas and LLM calls, using DSPy modules."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        inference_timeout_seconds: int,
+        rook_managed: bool = False,
+        vertex_bootstrap: VertexBootstrap | None = None,
+    ) -> None:
+        self._inference_timeout_seconds = inference_timeout_seconds
+        self._rook_managed = rook_managed
+        self._vertex_bootstrap = vertex_bootstrap
         configure_secure_dspy_cache()
         configured_model = os.environ.get("CHIRP_MODEL")
         self._default_model = configured_model or "anthropic/claude-opus-5"
@@ -185,11 +199,21 @@ class ChirpAdapter:
 
         # Create default LM with provider config (so CHIRP_MODEL=openai/mercury-2
         # plus CHIRP_PROVIDERS picks up api_base/api_key on the default path too)
-        self._lm = self._make_lm(self._default_model)
-        dspy.configure(lm=self._lm)
+        self._default_model_error: VertexAuthError | None = None
+        try:
+            self._lm = self._make_lm(self._default_model)
+        except VertexAuthError as exc:
+            if not self._default_model.startswith("vertex_ai/"):
+                raise
+            self._default_model_error = exc
+            self._lm = None
+        if self._lm is not None:
+            dspy.configure(lm=self._lm)
 
         # Cache of LM instances keyed by model string (avoid re-init per call)
-        self._lm_cache: dict[str, dspy.LM] = {self._default_model: self._lm}
+        self._lm_cache: dict[str, dspy.LM] = {}
+        if self._lm is not None:
+            self._lm_cache[self._default_model] = self._lm
 
         self._cache_enabled = os.environ.get("CHIRP_CACHE", "true").lower() == "true"
         self._cache: dict[str, dict] = {}
@@ -198,9 +222,21 @@ class ChirpAdapter:
         """Create a dspy.LM with provider config resolved from CHIRP_PROVIDERS.
 
         Also records whether the model is callable at all (``model_unavailable_reason``)
-        so ``call()`` can fail fast instead of paying LiteLLM's auth retries.
+        so ``call()`` can fail fast instead of paying LiteLLM's auth retries. Vertex
+        models are authorised through the managed bootstrap, not an env var, so the
+        credential check does not apply to them.
         """
-        kwargs: dict = {}
+        kwargs: dict = {"timeout": self._inference_timeout_seconds}
+        is_vertex = vertex_gemini_model_name(model) is not None
+        if is_vertex:
+            if self._vertex_bootstrap is None:
+                if self._rook_managed:
+                    raise VertexAuthError(
+                        "vertex_signed_out",
+                        "Vertex AI is not configured for this managed Chirp process.",
+                    )
+            else:
+                kwargs.update(self._vertex_bootstrap.vertex_kwargs_for_model(model))
         provider_cfg = self._providers.get(model)
         if provider_cfg:
             if "api_base" in provider_cfg:
@@ -212,16 +248,29 @@ class ChirpAdapter:
                     kwargs["api_key"] = api_key
         if not hasattr(self, "_unavailable"):
             self._unavailable: dict[str, str] = {}
-        reason = missing_credential(model, provider_cfg)
+        reason = None if is_vertex else missing_credential(model, provider_cfg)
         if reason:
             self._unavailable[model] = reason
         else:
             self._unavailable.pop(model, None)
-        return dspy.LM(model, **kwargs)
+        try:
+            return dspy.LM(model, **kwargs)
+        except Exception:
+            if is_vertex:
+                raise VertexAuthError(
+                    "vertex_request_failed",
+                    "Vertex AI request failed.",
+                ) from None
+            raise
 
     def model_unavailable_reason(self, model: str | None = None) -> str | None:
         """Why ``model`` (default: the adapter default) cannot be called, or None."""
         target = model or self._default_model
+        try:
+            if vertex_gemini_model_name(target) is not None:
+                return None  # Vertex readiness is reported through the vertex health path
+        except VertexAuthError:
+            return None
         if target not in self._lm_cache:
             self._lm_cache[target] = self._make_lm(target)
         return self._unavailable.get(target)
@@ -232,12 +281,26 @@ class ChirpAdapter:
     def _get_lm(self, model: str | None) -> dspy.LM | None:
         """Return a dspy.LM for the given model string, or None for default."""
         if not model or model == self._default_model:
+            if self._lm is None:
+                self._lm = self._make_lm(self._default_model)
+                self._default_model_error = None
+                self._lm_cache[self._default_model] = self._lm
+                dspy.configure(lm=self._lm)
             return None  # use default configured LM
         if model not in self._lm_cache:
             self._lm_cache[model] = self._make_lm(model)
         return self._lm_cache[model]
 
-    def call(
+    def resolve_model(self, category: str | None, model: str | None) -> str:
+        """Resolve the same explicit/category default used by inference."""
+        if model:
+            return model
+        category_name = (category or "").lower().strip()
+        if category_name in _CATEGORY_MODULES and category_name != "planner":
+            return self._non_planner_default_model
+        return self._default_model
+
+    async def acall(
         self,
         signature: str,
         inputs: dict,
@@ -247,7 +310,7 @@ class ChirpAdapter:
         use_cache: bool | None = None,
         model: str | None = None,
     ) -> dict:
-        """Call the LLM with a signature and inputs, return validated typed outputs.
+        """Call the LLM asynchronously and return validated typed outputs.
 
         Args:
             signature: DSPy signature string, e.g. "surface_description, intent -> u_count, v_count"
@@ -270,17 +333,23 @@ class ChirpAdapter:
         """
         should_cache = use_cache if use_cache is not None else self._cache_enabled
         cat = (category or "").lower().strip()
-        category_default = (
-            self._non_planner_default_model
-            if cat in _CATEGORY_MODULES and cat != "planner"
-            else self._default_model
-        )
-        effective_model = model or category_default
+        effective_model = self.resolve_model(category, model)
+
+        is_vertex = vertex_gemini_model_name(effective_model) is not None
+        if is_vertex:
+            if self._vertex_bootstrap is None:
+                if self._rook_managed:
+                    raise VertexAuthError(
+                        "vertex_signed_out",
+                        "Vertex AI is not configured for this managed Chirp process.",
+                    )
 
         # Check cache (model is part of the key — different model = different result)
         if should_cache:
             cache_key = self._cache_key(signature, inputs, schema, effective_model)
             if cache_key in self._cache:
+                if is_vertex and self._vertex_bootstrap is not None:
+                    self._vertex_bootstrap.assert_current_generation()
                 cached = self._cache[cache_key].copy()
                 cached["cached"] = True
                 return cached
@@ -328,13 +397,25 @@ class ChirpAdapter:
         predict = module_cls(typed_sig)
 
         # Per-call model override via dspy.context
-        override_lm = self._get_lm(effective_model)
-        active_lm = override_lm or self._lm
-        if override_lm is not None:
-            with dspy.context(lm=override_lm):
-                prediction = predict(**inputs)
-        else:
-            prediction = predict(**inputs)
+        try:
+            if is_vertex and self._vertex_bootstrap is not None:
+                self._vertex_bootstrap.assert_current_generation()
+            override_lm = self._get_lm(effective_model)
+            active_lm = override_lm or self._lm
+            if override_lm is not None:
+                with dspy.context(lm=override_lm):
+                    prediction = await predict.acall(**inputs)
+            else:
+                prediction = await predict.acall(**inputs)
+        except VertexAuthError:
+            raise
+        except Exception:
+            if is_vertex:
+                raise VertexAuthError(
+                    "vertex_request_failed",
+                    "Vertex AI request failed.",
+                ) from None
+            raise
 
         elapsed_ms = (time.perf_counter() - start) * 1000
 
