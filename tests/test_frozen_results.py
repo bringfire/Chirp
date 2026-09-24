@@ -72,7 +72,10 @@ class TestGeneratedSolvePaths:
         script = _create()["script"]
         assert "TryWriteFrozen(frozenText, BuildSnapshot(inputsHash, body));" in script
         assert "PersistentData.Clear();" in script
-        assert "PersistentData.Append(new GH_ObjectWrapper(snapshot));" in script
+        # GH_String, never GH_ObjectWrapper: the wrapper does not serialise its payload into the .gh.
+        assert "PersistentData.Append(new GH_String(snapshot));" in script
+        assert "GH_ObjectWrapper(snapshot)" not in script
+        assert "RefreshPin(param);" in script
         assert "if (param.SourceCount > 0) return;" in script
         assert "using Grasshopper.Kernel.Parameters;" in script
         assert "using Grasshopper.Kernel.Types;" in script
