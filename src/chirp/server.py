@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from chirp.adapter import ChirpAdapter
+from chirp.adapter import ChirpAdapter, ModelUnavailable, _load_providers, missing_credential
 from chirp.rook_tool import chirp_create
 from chirp.timeout_policy import (
     INVALID_TIMEOUT_CODE,
@@ -227,6 +227,24 @@ async def chirp_call(req: CallRequest):
         )
     except asyncio.CancelledError:
         raise
+    except ModelUnavailable as e:
+        # No credential for the model: answer at once so the component can fall
+        # back to its frozen result or deterministic defaults.
+        tracer.log(
+            signature=req.signature,
+            inputs=req.inputs,
+            schema=req.schema_,
+            outputs=None,
+            error=str(e),
+            latency_ms=0,
+            usage={"input_tokens": 0, "output_tokens": 0},
+            cache_hit=False,
+            model=effective_model,
+        )
+        return JSONResponse(
+            status_code=503,
+            content={"error": "model_unavailable", "details": str(e)},
+        )
     except VertexAuthError as e:
         return JSONResponse(
             status_code=503,
@@ -331,6 +349,27 @@ def health() -> dict:
             },
         }
     return {"status": "ok", **base}
+
+
+@app.get("/health/model")
+def health_model() -> dict:
+    """Credential readiness of the default model, from the environment alone.
+
+    Lets components and Rook tell "no key" apart from "adapter down" without
+    initialising any model or resolving managed credentials. Vertex models are
+    reported through /health instead.
+    """
+    default_model = (
+        adapter._default_model
+        if adapter is not None
+        else os.environ.get("CHIRP_MODEL", "anthropic/claude-opus-5")
+    )
+    try:
+        is_vertex = vertex_gemini_model_name(default_model) is not None
+    except VertexAuthError:
+        is_vertex = True
+    reason = None if is_vertex else missing_credential(default_model, _load_providers().get(default_model))
+    return {"model": default_model, "model_ready": reason is None, "model_reason": reason}
 
 
 def _vertex_health() -> tuple[str, VertexAuthError | None]:

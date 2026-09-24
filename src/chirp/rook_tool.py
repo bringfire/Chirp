@@ -116,6 +116,10 @@ JSON_READ_MAP: dict[str, str] = {
 }
 
 
+# Universal pins added to every LLM-backed component (see docs/plans/2026-09-23-*).
+RESERVED_FROZEN_PINS = frozenset({"freeze", "frozen"})
+
+
 def parse_pin(pin_def: str) -> tuple[str, str]:
     """Parse a pin definition like 'UCount:int' into (name, type)."""
     parts = pin_def.split(":")
@@ -203,10 +207,20 @@ def chirp_create(
                 f"Input pin name {pin_name!r} is reserved (auto-added for human corrections). "
                 f"Use a different name like 'Override' or 'Adjustment'."
             )
+        if pin_name.lower() in RESERVED_FROZEN_PINS:
+            raise ValueError(
+                f"Input pin name {pin_name!r} is reserved (auto-added for frozen results). "
+                f"Use a different name like 'Locked' or 'Snapshot'."
+            )
 
-    # ── Auto-add Correction input pin ────────────────────────────────
-    # Correction is always the last input — human override, optional.
+    # ── Auto-add universal input pins ────────────────────────────────
+    # Correction is always after the domain inputs — human override, optional.
+    # LLM components also get Freeze (replay on demand) and Frozen (the snapshot
+    # that travels with the .gh file); deterministic-only components never call
+    # the model, so they carry neither.
     all_in_pins = list(in_pins) + [("Correction", "string")]
+    if not deterministic_only:
+        all_in_pins += [("Freeze", "bool"), ("Frozen", "string")]
 
     # Build schema from output pins
     schema = {}
@@ -235,6 +249,22 @@ def chirp_create(
 
     all_in_pins_list = [{"name": n, "type": t} for n, t in in_pins]
     all_in_pins_list.append({"name": "Correction", "type": "string"})
+    if not deterministic_only:
+        all_in_pins_list.append({
+            "name": "Freeze",
+            "type": "bool",
+            "optional": True,
+            "description": "True: replay the frozen result and never call the model.",
+        })
+        all_in_pins_list.append({
+            "name": "Frozen",
+            "type": "string",
+            "optional": True,
+            "description": (
+                "Frozen result captured after the last successful model call; stored as "
+                "persistent data so it travels with the .gh file. Wire a Panel to supply one."
+            ),
+        })
 
     return {
         "script": script,
@@ -320,9 +350,14 @@ def _generate_script(
     w("using Rhino.Geometry;")
     w("using Grasshopper;")
     w("using Grasshopper.Kernel;")
+    w("using Grasshopper.Kernel.Parameters;")
+    w("using Grasshopper.Kernel.Types;")
     w()
     w("public class Script_Instance : GH_ScriptInstance")
     w("{")
+    frozen_index = [n for n, _ in in_pins].index("Frozen")
+    w(f"    private const int FrozenPinIndex = {frozen_index};")
+    w()
 
     # HttpClient as static field
     w("    private static readonly HttpClient _client = new HttpClient()")
@@ -341,7 +376,7 @@ def _generate_script(
 
     # Build inputs dict — cast from object to expected type
     # Correction is included in in_pins but handled specially below
-    domain_pins = [(n, t) for n, t in in_pins if n != "Correction"]
+    domain_pins = [(n, t) for n, t in in_pins if n != "Correction" and n.lower() not in RESERVED_FROZEN_PINS]
     w("            var inputs = new Dictionary<string, object>")
     w("            {")
     for i, (name, type_str) in enumerate(domain_pins):
@@ -380,53 +415,137 @@ def _generate_script(
     w(f'            var json = BuildRequestJson(@"{escaped_sig}", @"{escaped_cat}", {model_arg}, inputs, schema);')
     w()
 
-    # HTTP call
-    w('            var content = new StringContent(json, Encoding.UTF8, "application/json");')
-    w()
-    w(f'            var response = _client.PostAsync("http://localhost:{port}/chirp/call", content).GetAwaiter().GetResult();')
-    w('            var body = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();')
-    w()
-    w("            if (response.StatusCode == HttpStatusCode.GatewayTimeout)")
-    w('                throw new Exception($"chirp_inference_timeout: {body}");')
-    w("            if (!response.IsSuccessStatusCode)")
-    w('                throw new Exception($"Chirp error ({response.StatusCode}): {body}");')
+    # === Model call with frozen replay and deterministic fallback ===
+    # Order: Freeze on -> replay the item's frozen entry, or typed defaults when
+    # none exists (Freeze never calls the model); else call the adapter; on an
+    # adapter failure -> replay the entry if present, else typed defaults.
+    # Frozen entries are kept per list item (Grasshopper runs RunScript once per
+    # iteration), in one aggregate store so list matching is unaffected.
+    # Inference and transport timeouts stay hard errors (Rook classifies them);
+    # only "adapter unreachable" and adapter error responses fall back.
+    url = f"http://localhost:{port}/chirp/call"
+    unreachable = f"adapter not running on localhost:{port}"
+    w("            // === Model call with frozen replay and deterministic fallback ===")
+    w("            var freeze = ReadFlag(Freeze);")
+    w("            var inputsHash = HashText(json);")
+    w("            var store = ReadFrozenStore(Frozen);")
+    w('            var slot = "i" + Iteration;')
+    w("            bool entryMatches;")
+    w("            var entry = FindEntry(store, slot, inputsHash, out entryMatches);")
+    w("            string body = null;")
+    w('            string mode = "live";')
+    w('            string note = "";')
+    w("            if (freeze)")
+    w("            {")
+    w("                if (entry != null)")
+    w("                {")
+    w('                    body = ExtractObject(entry, "body");')
+    w('                    mode = "frozen";')
+    w("                }")
+    w("                else")
+    w("                {")
+    w('                    mode = "defaults";')
+    w('                    note = "Freeze is on and no frozen result exists for this item";')
+    w("                }")
+    w("            }")
+    w("            else")
+    w("            {")
+    w("                try")
+    w("                {")
+    w('                    var content = new StringContent(json, Encoding.UTF8, "application/json");')
+    w('                    var response = _client.PostAsync("' + url + '", content).GetAwaiter().GetResult();')
+    w("                    var text = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();")
+    w("                    if (response.StatusCode == HttpStatusCode.GatewayTimeout)")
+    w('                        throw new Exception($"chirp_inference_timeout: {text}");')
+    w("                    if (response.IsSuccessStatusCode)")
+    w("                        body = text;")
+    w("                    else")
+    w("                        note = DescribeAdapterError((int)response.StatusCode, text);")
+    w("                }")
+    w("                catch (HttpRequestException)")
+    w("                {")
+    w('                    note = "' + unreachable + '";')
+    w("                }")
+    w("                if (body == null)")
+    w("                {")
+    w("                    if (entry != null)")
+    w("                    {")
+    w('                        body = ExtractObject(entry, "body");')
+    w('                        mode = "frozen-fallback";')
+    w("                    }")
+    w("                    else")
+    w("                    {")
+    w('                        mode = "defaults";')
+    w("                    }")
+    w("                }")
+    w("            }")
     w()
 
     # Parse outputs and assign to ref params. These helpers intentionally avoid
     # System.Text.Json because Rhino.Inside C# script components may not resolve it.
-    w('            var result = ExtractObject(body, "outputs");')
-    w()
+    # Live and replayed bodies share this path; defaults are the typed zero values.
+    w('            var reasoningText = "";')
+    w("            if (body != null)")
+    w("            {")
+    w('                var result = ExtractObject(body, "outputs");')
     for name, type_str in out_pins:
         snake = _to_snake(name)
         reader = _csharp_json_reader(type_str)
         # Cast to object for ref assignment
-        w(f'            {name} = (object){reader}(result, "{snake}");')
-
-    # Reasoning — expose the LLM's chain of thought
+        w(f'                {name} = (object){reader}(result, "{snake}");')
+    w('                reasoningText = ReadString(body, "reasoning");')
+    w("            }")
+    w("            else")
+    w("            {")
+    w("                // === Deterministic defaults ===")
+    for name, type_str in out_pins:
+        w(f"                {name} = (object){_default_literal(type_str)};")
+    w("            }")
     w()
-    w('            Reasoning = (object)ReadString(body, "reasoning");')
 
-    # Deterministic post-processing
+    # Reasoning — expose the LLM's chain of thought, prefixed by the path taken.
+    w('            if (mode == "live")')
+    w("            {")
+    w("                Reasoning = (object)reasoningText;")
+    w("                TryWriteFrozen(store, slot, BuildEntry(inputsHash, body));")
+    w("            }")
+    w('            else if (mode == "frozen")')
+    w("            {")
+    w('                Reasoning = (object)("[frozen] " + reasoningText);')
+    w("            }")
+    w('            else if (mode == "frozen-fallback")')
+    w("            {")
+    w("                var changed = !entryMatches;")
+    w('                var detail = note + (changed ? "; inputs changed since capture" : "");')
+    w('                Reasoning = (object)("[frozen replay: " + detail + "] " + reasoningText);')
+    w('                Warn("Chirp replayed its frozen result (" + detail + ")");')
+    w("            }")
+    w("            else")
+    w("            {")
+    w('                Reasoning = (object)("[deterministic fallback: " + note + "]");')
+    w('                Warn("Chirp used deterministic defaults (" + note + ")");')
+    w("            }")
+
+    # Deterministic post-processing runs after outputs on every path (live,
+    # frozen, fallback), so an author-supplied rule also shapes the fallback.
     if deterministic_code:
         w()
         w("            // === Deterministic post-processing ===")
         w(f"            {deterministic_code}")
 
-    # Error handling
+    # Error handling — timeouts stay hard errors for Rook's classification; an
+    # unreachable adapter is handled above by the fallback, so it never lands here.
     w("        }")
     w("        catch (TaskCanceledException)")
     w("        {")
     w(f'            throw new Exception("chirp_transport_timeout: Chirp transport exceeded its {GENERATED_CLIENT_TIMEOUT_SECONDS}-second safety ceiling.");')
-    w("        }")
-    w("        catch (HttpRequestException)")
-    w("        {")
-    w(f'            Print("Chirp: adapter not running on localhost:{port}");')
     w("        }")
     w("        catch (Exception ex)")
     w("        {")
     w('            throw new Exception($"Chirp: {ex.Message}");')
     w("        }")
     w("    }")
+    _write_frozen_helpers(w)
     _write_json_helpers(w)
     w("}")
 
@@ -442,6 +561,258 @@ def _csharp_json_reader(type_str: str) -> str:
     if type_str == "bool":
         return "ReadBool"
     return "ReadString"
+
+
+def _default_literal(type_str: str) -> str:
+    """C# literal used for an output pin when no model result is available."""
+    if type_str == "int":
+        return "0"
+    if type_str in {"float", "double"}:
+        return "0.0"
+    if type_str == "bool":
+        return "false"
+    return '""'
+
+
+def _write_frozen_helpers(w) -> None:
+    """Emit the frozen-result helpers.
+
+    The Frozen pin holds ONE aggregate store (a single GH_String, so Grasshopper's
+    longest-list matching is unaffected) with one entry per list item:
+    ``{"v":2,"count":N,"items":{"i0":{"captured","inputs","body"}, ...}}``.
+    Entries are looked up by inputs hash first, then by iteration index.
+    """
+    w()
+    w("    private static bool ReadFlag(object value)")
+    w("    {")
+    w("        if (value is bool flag) return flag;")
+    w("        bool parsed;")
+    w("        return value != null && bool.TryParse(value.ToString(), out parsed) && parsed;")
+    w("    }")
+    w()
+    w("    private static bool HasBody(string entry)")
+    w("    {")
+    w("        if (string.IsNullOrWhiteSpace(entry)) return false;")
+    w('        var body = ExtractRawProperty(entry, "body");')
+    w("        return !string.IsNullOrWhiteSpace(body) && body.TrimStart().StartsWith(\"{\");")
+    w("    }")
+    w()
+    w("    private static string HashText(string text)")
+    w("    {")
+    w("        // FNV-1a 32-bit over UTF-8: stable across solves and machines.")
+    w("        // RhinoCode compiles scripts with overflow checking on; the multiply must wrap.")
+    w("        uint hash = 2166136261;")
+    w("        unchecked")
+    w("        {")
+    w('            foreach (var b in Encoding.UTF8.GetBytes(text ?? ""))')
+    w("            {")
+    w("                hash ^= b;")
+    w("                hash *= 16777619;")
+    w("            }")
+    w("        }")
+    w('        return hash.ToString("x8");')
+    w("    }")
+    w()
+    w("    private IGH_Param FrozenParam()")
+    w("    {")
+    w("        if (Component == null || FrozenPinIndex >= Component.Params.Input.Count) return null;")
+    w("        return Component.Params.Input[FrozenPinIndex];")
+    w("    }")
+    w()
+    w("    private string ReadFrozenStore(object frozenInput)")
+    w("    {")
+    w("        // A wired source is the user's store. Unwired: read the pin's persistent")
+    w("        // data directly, so later iterations of this solve see entries written by")
+    w("        // earlier ones (the collected input value is a snapshot from solve start).")
+    w("        try")
+    w("        {")
+    w("            var param = FrozenParam();")
+    w("            if (param != null && param.SourceCount == 0)")
+    w("            {")
+    w("                var goo = param as GH_PersistentParam<IGH_Goo>;")
+    w("                if (goo != null)")
+    w("                {")
+    w("                    foreach (var item in goo.PersistentData.AllData(true))")
+    w("                    {")
+    w("                        if (item == null) continue;")
+    w("                        var text = item.ToString();")
+    w("                        if (!string.IsNullOrWhiteSpace(text)) return text;")
+    w("                    }")
+    w('                    return "";')
+    w("                }")
+    w("            }")
+    w("        }")
+    w("        catch (Exception) { }")
+    w('        return frozenInput?.ToString() ?? "";')
+    w("    }")
+    w()
+    w("    private static string FindEntry(string store, string slot, string inputsHash, out bool matches)")
+    w("    {")
+    w("        matches = false;")
+    w("        if (string.IsNullOrWhiteSpace(store)) return null;")
+    w('        var items = ExtractRawProperty(store, "items");')
+    w("        if (string.IsNullOrWhiteSpace(items))")
+    w("        {")
+    w("            // Legacy single snapshot: one entry, treated as item 0.")
+    w('            if (slot == "i0" && HasBody(store))')
+    w("            {")
+    w('                matches = ReadString(store, "inputs") == inputsHash;')
+    w("                return store;")
+    w("            }")
+    w("            return null;")
+    w("        }")
+    w("        // The requested item's own entry wins when its inputs match, so two items")
+    w("        // with identical inputs keep their own distinct results; only then search")
+    w("        // the other items by inputs hash (reordered lists), then fall back to position.")
+    w("        var positional = ExtractRawProperty(items, slot);")
+    w("        if (HasBody(positional) && ReadString(positional, \"inputs\") == inputsHash)")
+    w("        {")
+    w("            matches = true;")
+    w("            return positional;")
+    w("        }")
+    w('        var count = ReadInt(store, "count");')
+    w("        for (var k = 0; k < count; k++)")
+    w("        {")
+    w('            var candidate = ExtractRawProperty(items, "i" + k);')
+    w('            if (HasBody(candidate) && ReadString(candidate, "inputs") == inputsHash)')
+    w("            {")
+    w("                matches = true;")
+    w("                return candidate;")
+    w("            }")
+    w("        }")
+    w("        return HasBody(positional) ? positional : null;")
+    w("    }")
+    w()
+    w("    private static string BuildEntry(string inputsHash, string body)")
+    w("    {")
+    w("        var sb = new StringBuilder();")
+    w('        sb.Append("{");')
+    w('        AppendStringProperty(sb, "captured", DateTime.UtcNow.ToString("o"));')
+    w('        sb.Append(",");')
+    w('        AppendStringProperty(sb, "inputs", inputsHash);')
+    w('        sb.Append(",\\"body\\":");')
+    w("        sb.Append(body);")
+    w('        sb.Append("}");')
+    w("        return sb.ToString();")
+    w("    }")
+    w()
+    w("    private static string BuildStore(string store, int index, string entry)")
+    w("    {")
+    w('        var current = store ?? "";')
+    w('        var items = ExtractRawProperty(current, "items");')
+    w('        var count = ReadInt(current, "count");')
+    w("        if (string.IsNullOrWhiteSpace(items) && HasBody(current))")
+    w("        {")
+    w('            items = "{\\"i0\\":" + current + "}"; // legacy single snapshot')
+    w("            count = 1;")
+    w("        }")
+    w("        var total = Math.Max(count, index + 1);")
+    w("        var sb = new StringBuilder();")
+    w('        sb.Append("{\\"v\\":2,\\"count\\":").Append(total).Append(",\\"items\\":{");')
+    w("        var first = true;")
+    w("        for (var k = 0; k < total; k++)")
+    w("        {")
+    w('            var raw = k == index ? entry : ExtractRawProperty(items, "i" + k);')
+    w("            if (!HasBody(raw)) continue;")
+    w('            if (!first) sb.Append(",");')
+    w("            first = false;")
+    w('            sb.Append("\\"i").Append(k).Append("\\":").Append(raw);')
+    w("        }")
+    w('        sb.Append("}}");')
+    w("        return sb.ToString();")
+    w("    }")
+    w()
+    w("    private static string DescribeAdapterError(int status, string text)")
+    w("    {")
+    w('        var code = ReadString(text ?? "", "error");')
+    w('        var details = ReadString(text ?? "", "details");')
+    w("        if (!string.IsNullOrWhiteSpace(code))")
+    w('            return code + (string.IsNullOrWhiteSpace(details) ? "" : ": " + details);')
+    w('        return "adapter error " + status;')
+    w("    }")
+    w()
+    w("    private void Warn(string message)")
+    w("    {")
+    w("        // Rhino 8 script instances expose AddRuntimeMessage directly (like Print).")
+    w("        try { AddRuntimeMessage(GH_RuntimeMessageLevel.Warning, message); }")
+    w("        catch (Exception) { Print(message); }")
+    w("    }")
+    w()
+    w("    private bool IsLastIteration()")
+    w("    {")
+    w("        var max = 1;")
+    w("        try")
+    w("        {")
+    w("            foreach (var p in Component.Params.Input)")
+    w("                if (p.VolatileDataCount > max) max = p.VolatileDataCount;")
+    w("        }")
+    w("        catch (Exception) { }")
+    w("        return Iteration + 1 >= max;")
+    w("    }")
+    w()
+    w("    private void TryWriteFrozen(string store, string slot, string entry)")
+    w("    {")
+    w("        // Store the updated aggregate as the Frozen pin's persistent data (what")
+    w("        // 'Internalise data' does), so it is saved in the .gh and travels with it.")
+    w("        try")
+    w("        {")
+    w("            var param = FrozenParam();")
+    w("            if (param == null || string.IsNullOrEmpty(entry)) return;")
+    w("            if (param.SourceCount > 0) return; // a wired store belongs to the user")
+    w('            var existing = ExtractRawProperty(ExtractRawProperty(store ?? "", "items"), slot);')
+    w('            if (string.IsNullOrWhiteSpace(existing) && slot == "i0" && HasBody(store ?? "")) existing = store;')
+    w("            if (HasBody(existing)")
+    w('                && ExtractRawProperty(existing, "body") == ExtractRawProperty(entry, "body")')
+    w('                && ReadString(existing, "inputs") == ReadString(entry, "inputs"))')
+    w("                return; // unchanged result: do not dirty the document for a new timestamp")
+    w("            var updated = BuildStore(store, Iteration, entry);")
+    w("            // Store a GH_String, never a GH_ObjectWrapper: the wrapper does not write")
+    w("            // its payload into the .gh file, so the store would reopen empty.")
+    w("            var goo = param as GH_PersistentParam<IGH_Goo>;")
+    w("            if (goo != null)")
+    w("            {")
+    w("                goo.PersistentData.Clear();")
+    w("                goo.PersistentData.Append(new GH_String(updated));")
+    w("            }")
+    w("            else")
+    w("            {")
+    w('                var property = param.GetType().GetProperty("PersistentData");')
+    w("                var data = property == null ? null : property.GetValue(param);")
+    w("                if (data == null)")
+    w("                {")
+    w('                    Print("Chirp: this input cannot hold persistent data; frozen result not stored.");')
+    w("                    return;")
+    w("                }")
+    w('                var clear = data.GetType().GetMethod("Clear", Type.EmptyTypes);')
+    w("                if (clear != null) clear.Invoke(data, null);")
+    w("                object payload = new GH_String(updated);")
+    w('                var append = data.GetType().GetMethod("Append", new[] { payload.GetType() });')
+    w("                if (append == null)")
+    w('                    append = data.GetType().GetMethod("Append", new[] { typeof(IGH_Goo) });')
+    w("                if (append == null)")
+    w("                {")
+    w('                    Print("Chirp: persistent data has no Append for the frozen result.");')
+    w("                    return;")
+    w("                }")
+    w("                append.Invoke(data, new[] { payload });")
+    w("            }")
+    w("            if (IsLastIteration()) RefreshPin(param);")
+    w("        }")
+    w("        catch (Exception ex)")
+    w("        {")
+    w('            Print("Chirp: could not store the frozen result: " + ex.Message);')
+    w("        }")
+    w("    }")
+    w()
+    w("    private static void RefreshPin(IGH_Param param)")
+    w("    {")
+    w("        // Grasshopper only re-collects a source-less input's persistent data when the")
+    w("        // parameter itself is reset; a component re-solve alone keeps the stale volatile")
+    w("        // value. Reset and re-collect after the last iteration so the canvas shows the")
+    w("        // new store. Nothing is expired, so no extra solve is triggered.")
+    w("        param.ClearData();")
+    w("        param.CollectData();")
+    w("    }")
 
 
 def _write_json_helpers(w) -> None:
@@ -562,24 +933,69 @@ def _write_json_helpers(w) -> None:
     w()
     w("    private static string ExtractRawProperty(string json, string property)")
     w("    {")
-    w("        var marker = \"\\\"\" + property + \"\\\"\";")
-    w("        var key = json.IndexOf(marker, StringComparison.Ordinal);")
-    w("        if (key < 0)")
-    w("            return string.Empty;")
-    w("        var colon = json.IndexOf(':', key + marker.Length);")
-    w("        if (colon < 0)")
-    w("            return string.Empty;")
-    w("        var start = SkipWhitespace(json, colon + 1);")
-    w("        if (start >= json.Length)")
-    w("            return string.Empty;")
-    w("        if (json[start] == '\"')")
-    w("            return json.Substring(start, ScanStringEnd(json, start) - start + 1);")
-    w("        if (json[start] == '{')")
-    w("            return json.Substring(start, ScanObjectEnd(json, start) - start + 1);")
+    w("        // Walks the TOP-LEVEL members of the object only, so a nested key with the")
+    w("        // same name (an output pin named 'i1' inside a stored body, or 'body' inside")
+    w("        // outputs) can never shadow the property being asked for.")
+    w("        if (string.IsNullOrEmpty(json)) return string.Empty;")
+    w("        var i = SkipWhitespace(json, 0);")
+    w("        if (i >= json.Length || json[i] != '{') return string.Empty;")
+    w("        i++;")
+    w("        while (i < json.Length)")
+    w("        {")
+    w("            i = SkipWhitespace(json, i);")
+    w("            if (i >= json.Length || json[i] == '}') return string.Empty;")
+    w("            if (json[i] == ',') { i++; continue; }")
+    w("            if (json[i] != '\"') return string.Empty;")
+    w("            var keyEnd = ScanStringEnd(json, i);")
+    w("            var key = UnescapeJsonString(json.Substring(i + 1, keyEnd - i - 1));")
+    w("            i = SkipWhitespace(json, keyEnd + 1);")
+    w("            if (i >= json.Length || json[i] != ':') return string.Empty;")
+    w("            var start = SkipWhitespace(json, i + 1);")
+    w("            if (start >= json.Length) return string.Empty;")
+    w("            var end = ScanValueEnd(json, start);")
+    w("            if (key == property) return json.Substring(start, end - start).Trim();")
+    w("            i = end;")
+    w("        }")
+    w("        return string.Empty;")
+    w("    }")
+    w()
+    w("    private static int ScanValueEnd(string text, int start)")
+    w("    {")
+    w("        // Index just past a JSON value: string, object, array, or a bare literal.")
+    w("        var ch = text[start];")
+    w("        if (ch == '\"') return ScanStringEnd(text, start) + 1;")
+    w("        if (ch == '{' || ch == '[') return ScanContainerEnd(text, start) + 1;")
     w("        var end = start;")
-    w("        while (end < json.Length && json[end] != ',' && json[end] != '}')")
+    w("        while (end < text.Length && text[end] != ',' && text[end] != '}' && text[end] != ']')")
     w("            end++;")
-    w("        return json.Substring(start, end - start).Trim();")
+    w("        return end;")
+    w("    }")
+    w()
+    w("    private static int ScanContainerEnd(string text, int start)")
+    w("    {")
+    w("        // Closing index of the object or array opening at start; strings are skipped.")
+    w("        var depth = 0;")
+    w("        var inString = false;")
+    w("        var escaped = false;")
+    w("        for (var i = start; i < text.Length; i++)")
+    w("        {")
+    w("            var c = text[i];")
+    w("            if (inString)")
+    w("            {")
+    w("                if (escaped) escaped = false;")
+    w("                else if (c == '\\\\') escaped = true;")
+    w("                else if (c == '\"') inString = false;")
+    w("                continue;")
+    w("            }")
+    w("            if (c == '\"') inString = true;")
+    w("            else if (c == '{' || c == '[') depth++;")
+    w("            else if (c == '}' || c == ']')")
+    w("            {")
+    w("                depth--;")
+    w("                if (depth == 0) return i;")
+    w("            }")
+    w("        }")
+    w("        throw new Exception(\"Chirp response contained an unterminated container.\");")
     w("    }")
     w()
     w("    private static int SkipWhitespace(string text, int index)")
