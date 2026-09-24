@@ -25,6 +25,19 @@ for both a frozen component and a Freeze-on component without a store. Merged wi
 (timeout policy + Vertex): timeouts stay hard errors, `/health` unchanged, readiness at
 `GET /health/model`.
 
+**Review round 2 (Codex), 2026-09-24.** Two replay defects in the generated helpers: (P2a) two
+items with identical inputs replayed the first item's result, because the hash search ran before
+the positional lookup; the requested item's own entry now wins when its hash matches, then other
+items by hash, then position. (P2b) `ExtractRawProperty` was a flat substring search, so an output
+pin named `I1` (snake `i1`) inside a stored body shadowed the store key `i1`, breaking lookup and
+deleting the neighbour on update; it now walks the object's top-level members only
+(`ScanValueEnd`/`ScanContainerEnd` skip nested objects, arrays and strings), which also removes the
+same latent risk for `body`, `count`, `outputs` and `reasoning`. Because string assertions cannot
+catch helper bugs, `tools/csharp-helper-tests/` compiles a generated component (with colliding pin
+names `I1`, `Body`, `Count`) against Rhino 8 and exercises the private helpers through reflection:
+`python tools/csharp-helper-tests/run.py` → 15 cases incl. both reproductions, legacy upgrade, and
+checked-arithmetic hashing. Live re-check after the change: two-item live → per-item replay.
+
 ## Problem
 
 A Chirp component is a Grasshopper script that calls the adapter on every solve. Without a

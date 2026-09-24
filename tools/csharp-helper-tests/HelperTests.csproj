@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Compiles a generated Chirp component (Script.cs, produced by run.py from
+    chirp_create) against the real Rhino 8 assemblies and exercises its private
+    static JSON/frozen-store helpers through reflection. Needs Rhino 8 installed;
+    run with:  python tools/csharp-helper-tests/run.py
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net7.0-windows</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <CheckForOverflowUnderflow>true</CheckForOverflowUnderflow>
+    <NoWarn>CS1701;CS1702;CS8632;CS0108;NETSDK1138</NoWarn>
+    <UseWindowsForms>true</UseWindowsForms>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Stub.cs" />
+    <Compile Include="Script.cs" />
+    <Compile Include="Program.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="RhinoCommon">
+      <HintPath>$(RhinoSystemDir)RhinoCommon.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Grasshopper">
+      <HintPath>$(RhinoPluginsDir)Grasshopper\Grasshopper.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="GH_IO">
+      <HintPath>$(RhinoPluginsDir)Grasshopper\GH_IO.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+  <PropertyGroup>
+    <RhinoSystemDir Condition="'$(RhinoSystemDir)' == ''">C:\Program Files\Rhino 8\System\</RhinoSystemDir>
+    <RhinoPluginsDir Condition="'$(RhinoPluginsDir)' == ''">C:\Program Files\Rhino 8\Plug-ins\</RhinoPluginsDir>
+  </PropertyGroup>
+</Project>

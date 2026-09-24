@@ -32,3 +32,8 @@ Chirp_API_Key.txt
 
 # SDK reference (14MB binary)
 Grasshopper SDK.chm
+
+# compiled C# helper tests (generated script + build outputs)
+tools/csharp-helper-tests/Script.cs
+tools/csharp-helper-tests/bin/
+tools/csharp-helper-tests/obj/

@@ -117,6 +117,16 @@ class TestGeneratedSolvePaths:
         assert "goo.PersistentData.AllData(true)" in script
         assert "if (IsLastIteration()) RefreshPin(param);" in script
 
+    def test_lookup_prefers_the_items_own_entry_and_respects_nesting(self):
+        script = _create()["script"]
+        find = script[script.index("private static string FindEntry"):script.index("private static string BuildEntry")]
+        # Requested slot first (duplicate inputs keep distinct results), then hash search, then position.
+        assert find.index("var positional = ExtractRawProperty(items, slot);") < find.index('var count = ReadInt(store, "count");')
+        extract = script[script.index("private static string ExtractRawProperty"):script.index("private static int ScanValueEnd")]
+        assert "IndexOf(marker" not in extract  # no flat substring search
+        assert "ScanValueEnd(json, start)" in extract and "if (key == property)" in extract
+        assert "private static int ScanContainerEnd" in script
+
     def test_freeze_without_a_frozen_result_never_calls_the_model(self):
         script = _create()["script"]
         start = script.index("if (freeze)")
