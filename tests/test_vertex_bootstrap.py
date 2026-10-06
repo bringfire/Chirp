@@ -231,6 +231,23 @@ def test_managed_retirement_event_requests_graceful_uvicorn_exit():
     assert listener.is_alive() is False
 
 
+@pytest.mark.parametrize('mode', ['oauth', 'adc'])
+def test_v2_active_legacy_generation_survives_pending_import(tmp_path, mode):
+    credentials = AUTHORIZED_USER if mode == 'oauth' else None
+    bootstrap = VertexBootstrap(**_payload(mode=mode, vertex_credentials=credentials))
+    store = tmp_path/'vertex.json'
+    store.write_text(json.dumps({'schema_version': 2, 'active': {'generation': GENERATION, 'mode': mode}, 'pending': {'revision': 'pending'}}))
+    bootstrap.assert_current_generation(store)
+
+
+@pytest.mark.parametrize('active', [None, {}, {'mode': 'workforce', 'generation': GENERATION}, {'mode': 'adc', 'generation': GENERATION}, {'mode': 'oauth', 'generation': ROTATED_GENERATION}])
+def test_v2_rejects_missing_changed_or_workforce_active_even_with_top_level_generation(tmp_path, active):
+    store = tmp_path/'vertex.json'
+    store.write_text(json.dumps({'schema_version': 2, 'generation': GENERATION, 'active': active, 'pending': None}))
+    with pytest.raises(VertexRestartRequired):
+        VertexBootstrap(**_payload()).assert_current_generation(store)
+
+
 def test_standalone_process_does_not_create_or_wait_on_retirement_event():
     server = SimpleNamespace(should_exit=False)
 
