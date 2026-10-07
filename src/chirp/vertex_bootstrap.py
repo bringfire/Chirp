@@ -139,7 +139,14 @@ class VertexBootstrap:
         try:
             raw = path.read_text(encoding="utf-8")
             value = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
-            generation = value.get("generation") if isinstance(value, dict) else None
+            generation = None
+            if isinstance(value, dict):
+                if value.get("schema_version") == 2:
+                    active = value.get("active")
+                    if isinstance(active, dict) and active.get("mode") == self.mode:
+                        generation = active.get("generation")
+                elif value.get("schema_version") in (None, 1):
+                    generation = value.get("generation")
         except (OSError, UnicodeError, json.JSONDecodeError, VertexBootstrapError):
             raise VertexRestartRequired() from None
         if generation != self.generation:
